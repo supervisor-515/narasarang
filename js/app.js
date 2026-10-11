@@ -157,7 +157,17 @@
     let v = (base * rate) / 100;
     if (c.cap) v = Math.min(v, c.cap);
     if (c.capUnder && amt < c.capUnder[0]) v = Math.min(v, c.capUnder[1]);
-    return limitBy(b, amt, { v: Math.floor(v), rate });
+    return withExtra(b, amt, limitBy(b, amt, { v: Math.floor(v), rate }));
+  }
+
+  // 중복 적용 혜택(예: IBK PX 기본 + 특별할인)을 예상액에 합산
+  function withExtra(b, amt, x) {
+    const eb = b.extra && BENEFIT[b.extra];
+    if (!eb || !x) return x;
+    const st = evaluate(eb, amt).status;
+    const ex = (st === 'ok' || st === 'check') && estimate(eb, amt);
+    if (ex && ex.v > 0) { x.extra = { b: eb, v: ex.v }; x.v += ex.v; }
+    return x;
   }
 
   function limitBy(b, amt, x) {
@@ -215,12 +225,12 @@
     let val = `<b>${esc(b.value)}</b><i>${esc(b.type)}</i>`;
     if (x) {
       val = x.v > 0
-        ? `<b class="est">${b.calc.steps ? x.v.toLocaleString('ko-KR') + 'P' : '−' + won(x.v)}</b><i>${esc(b.value)} ${esc(b.type)}</i>`
+        ? `<b class="est">${b.calc.steps ? x.v.toLocaleString('ko-KR') + 'P' : '−' + won(x.v)}</b><i>${x.extra ? `${esc(x.extra.b.title.replace(/.*\) ?/, ''))} ${won(x.extra.v)} 포함` : `${esc(b.value)} ${esc(b.type)}`}</i>`
         : `<b>${esc(b.value)}</b><i>${esc(x.note || b.type)}</i>`;
     }
     const personal = b.personal ? b.personal(S) : '';
     const used = usage(b.limKey || b.id, null);
-    const canConfirm = x && x.v > 0 && ui.amount && (e.status === 'ok' || e.status === 'check');
+    const canConfirm = !b.addon && x && x.v > 0 && ui.amount && (e.status === 'ok' || e.status === 'check');
     const extra = e.why.filter((w) => w.includes('면제')).map((w) => `<span class="pill ok">${esc(w)}</span>`).join('');
     return `
       <div role="button" tabindex="0" class="item ${e.status === 'none' || e.status === 'no' ? 'dim' : ''} ${open ? 'open' : ''}" data-id="${b.id}">
@@ -259,7 +269,7 @@
   }
 
   function best(rows, label) {
-    const top = rows.find((r) => r.e.status === 'ok' && (!ui.amount || !r.x || r.x.v > 0));
+    const top = rows.find((r) => r.e.status === 'ok' && !r.b.addon && (!ui.amount || !r.x || r.x.v > 0));
     if (!top) {
       const spent = rows.filter((r) => r.e.why && /소진|모두 사용/.test(r.e.why[0] || ''));
       return spent.length ? `<div class="section"><b>쓸 수 있는 한도를 다 썼어요</b>${spent.map((r) => `<div class="muted">${esc(CARD[r.b.card].short + ' ' + r.b.title)} · ${esc(r.e.why[0])}</div>`).join('')}</div>` : '';
@@ -271,7 +281,7 @@
         <div class="k">${esc(label)} 가장 좋은 혜택</div>
         <div class="t">${esc(c.name)}로 결제하세요</div>
         <div class="v">${esc(v)}</div>
-        <div class="s">${esc(top.b.title)}${top.b.limit ? ' · ' + esc(top.b.limit) : ''}</div>
+        <div class="s">${esc(top.b.title)}${top.x && top.x.extra ? ` + ${esc(top.x.extra.b.title)} ${won(top.x.extra.v)}` : top.b.limit ? ' · ' + esc(top.b.limit) : ''}</div>
         ${top.x && top.x.partial && top.x.v > 0 ? '<div class="s">⚠️ 남은 한도까지만 적용돼요</div>' : ''}
         ${top.x && top.x.v > 0 && ui.amount ? `<button class="best-confirm" data-confirm="${esc(top.b.id)}">이 카드로 결제 확정</button>` : ''}
       </div>`;
@@ -519,10 +529,13 @@
     const x = b && estimate(b, ui.amount);
     if (!x || !(x.v > 0)) return;
     const c = CARD[b.card];
-    LEDGER.push({
-      id: Date.now(), ts: Date.now(), b: b.id, k: b.limKey || b.id, card: b.card,
-      title: b.title, amt: ui.amount, v: x.v, pooled: !!(b.req && b.req.pooled),
+    const now = Date.now();
+    const rec = (bb, v, n) => LEDGER.push({
+      id: now + n, ts: now, b: bb.id, k: bb.limKey || bb.id, card: bb.card,
+      title: bb.title, amt: ui.amount, v, pooled: !!(bb.req && bb.req.pooled),
     });
+    rec(b, x.v - (x.extra ? x.extra.v : 0), 0);
+    if (x.extra) rec(x.extra.b, x.extra.v, 1);
     saveLedger();
     const left = remaining(b, ui.amount);
     ui.amount = 0;

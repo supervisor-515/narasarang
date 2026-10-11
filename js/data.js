@@ -24,6 +24,8 @@
  *  notes    : 유의사항
  *  until    : 프로모션 종료일
  *  personal : (settings) => 사용자 상황별 추가 안내 문구
+ *  extra    : 함께 중복 적용되는 혜택 id (예상액에 합산, 확정 시 같이 기록)
+ *  addon    : 단독으로는 확정하지 않는 부가 혜택
  */
 (function () {
   const BANKS = [
@@ -188,17 +190,17 @@
       req: { salary: 'hana' }, notes: ['급여이체 조건 충족 다음 달부터 자동 가입', '가입일부터 92일 이후 보상 가능', '문의: NICE평가정보 1600-1533'] },
 
     // ───────────────────────── IBK ─────────────────────────
-    { card: 'ibk', sector: 'px', group: '파워업 · 실적 무관', title: '군마트(PX) 기본할인', lim: [{ under: 30000, month: 10000, monthCount: (s) => (s.salary === 'ibk' ? 6 : 3) }, { over: 30000, month: 50000, monthCount: (s) => (s.salary === 'ibk' ? Infinity : 2) }],
+    { card: 'ibk', sector: 'px', group: '파워업 · 실적 무관', title: '군마트(PX) 기본할인', extra: 'ibk:파워업:군마트(PX) 특별할인', lim: [{ under: 30000, month: 10000, monthCount: (s) => (s.salary === 'ibk' ? 6 : 3) }, { over: 30000, month: 50000, monthCount: (s) => (s.salary === 'ibk' ? Infinity : 2) }],
       where: '전국 군부대 PX (해군마트 포함)', rate: 30, value: '최대 30%', type: '청구할인',
       limit: '3만원 미만 15% (월 1만) / 3만원↑ 10%, 7만원↑ 20%, 10만원↑ 30% (월 5만)',
       calc: { tiers: [[0, 15], [30000, 10], [70000, 20], [100000, 30]], cap: 50000, capUnder: [30000, 10000] },
       personal: IBK_PX_PERSONAL,
-      notes: ['특별할인(20만원↑ 5만원)과 동시 적용, 최대 50%'] },
-    { card: 'ibk', sector: 'px', group: '파워업 · 실적 무관', title: '군마트(PX) 특별할인', lim: [{ yearCount: (s) => (s.salary === 'ibk' ? 2 : 1) }],
+      notes: ['20만원 이상이면 특별할인 5만원이 함께 적용돼요 (최대 50%)', '예) 20만원 결제 → 기본 30% 5만원 + 특별 5만원 = 10만원 할인'] },
+    { card: 'ibk', sector: 'px', group: '파워업 · 실적 무관', title: '군마트(PX) 특별할인', addon: true, lim: [{ yearCount: (s) => (s.salary === 'ibk' ? 2 : 1) }],
       where: '전국 군부대 PX (해군마트 포함)', rate: 25, value: '5만원', type: '청구할인',
       limit: '건당 20만원 이상 결제 시 · 현역병 연 1회 / 급여이체자 연 2회',
       calc: { fixed: 50000, min: 200000 }, personal: IBK_PX_PERSONAL,
-      notes: ['예) PX 20만원 결제 → 기본할인 5만 + 특별할인 5만 = 10만원 할인'] },
+      notes: ['기본할인과 중복 적용 — 기본할인으로 결제 확정하면 함께 기록돼요', '예) PX 20만원 결제 → 기본할인 5만 + 특별할인 5만 = 10만원 할인'] },
 
     { card: 'ibk', sector: 'store', group: '나라 · 전월 8만원', title: '편의점 청구할인', lim: [{ monthCount: 2 }],
       where: 'CU, GS25, 이마트24', kw: '씨유 emart24', rate: 10, value: '10%', type: '청구할인', limit: '월 2회 · 1회 1천원',
