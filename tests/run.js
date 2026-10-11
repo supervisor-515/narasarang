@@ -129,6 +129,18 @@ test('PX 3만원 경계: 하나 29,999원 → 일 5천 한도, 30,000원 → 20%
   assert.strictEqual(E.estimate(B('hana-px'), 30000).v, 6000);
 });
 
+test('남은 한도: 일 한도와 월 한도를 따로 계산 (하나 PX 12,990원·65,760원 결제 후)', () => {
+  const ledger = [
+    tx('2026-10-15T09:00:00', 'hana', 12990, [{ b: 'hana-px', k: 'hana-px', v: 3897 }]),
+    tx('2026-10-15T10:00:00', 'hana', 65760, [{ b: 'hana-px', k: 'hana-px', v: 13152 }]),
+  ];
+  const { E } = setup({ s: { cards: ['hana'] }, ledger });
+  const under = E.remaining(B('hana-px'), 29999);
+  assert.deepStrictEqual([under.dRem, under.mRem], [1103, 6103]);
+  const over = E.remaining(B('hana-px'), 30000);
+  assert.deepStrictEqual([over.dRem, over.mRem], [6848, 86848]);
+});
+
 test('IBK 쇼핑·배달 월 2회 공유', () => {
   const ledger = [
     tx('2026-10-03T10:00:00', 'ibk', 20000, [{ b: 'ibk-aio-shop', k: 'ibk-aio-shop', v: 1000, pooled: true }]),

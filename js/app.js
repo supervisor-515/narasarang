@@ -359,13 +359,17 @@
       const probes = bands.length ? bands.map((r) => [r.under ? `${man(r.under)} 미만` : `${man(r.over)} 이상`, r.under ? r.under - 1 : r.over]) : [['', null]];
       const txt = probes.map(([label, amt]) => {
         const left = E.remaining(b, amt);
-        const v = left.rem === 0 ? `<span class="no-left">${esc(left.why.replace(label, '').trim())}</span>` : isFinite(left.rem) ? won(left.rem) + ' 남음' : '한도 내';
+        // 일 한도가 월 한도보다 먼저 걸리면 오늘·이번 달을 나눠서 표시
+        const split = left.rem > 0 && isFinite(left.dRem) && isFinite(left.mRem) && left.dRem < left.mRem;
+        const v = left.rem === 0 ? `<span class="no-left">${esc(left.why.replace(label, '').trim())}</span>`
+          : split ? `오늘 ${won(left.dRem)} · 이번 달 ${won(left.mRem)} 남음`
+            : isFinite(left.rem) ? won(left.rem) + ' 남음' : '한도 내';
         return label ? `<div>${esc(label)} · ${v}</div>` : v;
       }).join('');
       rows.push(`<div class="kv"><span>${esc(b.title)}<br><small class="muted">이번 달 ${fmtV(u.mSum, unitOf(b))} · ${u.mCnt}회</small></span><b class="remain">${txt}</b></div>`);
     });
     if (!rows.length) return '';
-    return `<div class="section"><h2>이번 달 남은 한도</h2>${rows.join('')}</div>`;
+    return `<div class="section"><h2>남은 한도</h2>${rows.join('')}</div>`;
   }
 
   function ledgerSection(c) {

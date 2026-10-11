@@ -142,6 +142,8 @@
     function remaining(b, amt) {
       let rem = Infinity;
       let why = '';
+      let mRem = Infinity; // 금액 한도만 따로: 이번 달 / 오늘
+      let dRem = Infinity;
       const t = now();
       (b.lim || []).forEach((r) => {
         const banded = r.under || r.over;
@@ -151,6 +153,8 @@
         const m = resolve(r.month); const d = resolve(r.day);
         const mc = resolve(r.monthCount); const dc = resolve(r.dayCount); const yc = resolve(r.yearCount);
         const band = r.under ? `${man(r.under)} 미만 ` : r.over ? `${man(r.over)} 이상 ` : '';
+        if (m != null) mRem = Math.min(mRem, Math.max(0, m - u.mSum));
+        if (d != null) dRem = Math.min(dRem, Math.max(0, d - u.dSum));
         if (m != null && m - u.mSum < rem) { rem = Math.max(0, m - u.mSum); if (!rem) why = `${band}이번 달 한도 소진`; }
         if (d != null && d - u.dSum < rem) { rem = Math.max(0, d - u.dSum); if (!rem) why = `${band}오늘 한도 소진`; }
         if (mc != null && u.mCnt >= mc) { rem = 0; why = `${band}이번 달 ${mc}회 모두 사용`; }
@@ -164,7 +168,7 @@
           if (!rem) why = '통합한도 소진';
         }
       }
-      return { rem, why };
+      return { rem, why, mRem, dRem };
     }
 
     // ───── 자격 조건 ─────
