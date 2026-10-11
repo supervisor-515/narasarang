@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>나라사랑 혜택</title>
+  <meta name="description" content="나라사랑카드 4종(하나·IBK·신한·KB) 혜택을 결제 전에 빠르게 찾아보는 앱">
+  <meta name="theme-color" content="#F2F4F6" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#101114" media="(prefers-color-scheme: dark)">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="나라사랑혜택">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <main id="view" class="view" aria-live="polite"></main>
+
+  <nav class="tabbar" aria-label="메인 메뉴">
+    <button data-tab="home" class="tab"><span class="tab-ico">🔍</span><span>찾기</span></button>
+    <button data-tab="sector" class="tab"><span class="tab-ico">🗂️</span><span>섹터</span></button>
+    <button data-tab="cards" class="tab"><span class="tab-ico">💳</span><span>내 카드</span></button>
+    <button data-tab="settings" class="tab"><span class="tab-ico">⚙️</span><span>설정</span></button>
+  </nav>
+
+  <script src="js/data.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
