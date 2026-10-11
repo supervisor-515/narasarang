@@ -21,12 +21,12 @@ function test(name, fn) {
 }
 
 // 날짜·설정·기록을 고정한 엔진
-function setup({ s = {}, ledger = [], date = '2026-10-15T12:00:00' } = {}) {
-  const st = { now: new Date(date).getTime() };
+function setup({ s = {}, ledger = [], date = '2026-10-15T12:00:00', tickets = 1 } = {}) {
+  const st = { now: new Date(date).getTime(), tickets };
   const S = Object.assign({ cards: [], salary: null, savings: [], spend: {}, spendAt: {}, firstUse: {}, soldier: null, checks: {} }, s);
   Object.keys(S.spend).forEach((k) => { if (!S.spendAt[k]) S.spendAt[k] = date.slice(0, 7); });
-  const E = Engine.create(DATA, { getS: () => S, getLedger: () => ledger, now: () => st.now });
-  return { E, S, ledger, setDate: (d) => { st.now = new Date(d).getTime(); } };
+  const E = Engine.create(DATA, { getS: () => S, getLedger: () => ledger, now: () => st.now, getInput: () => ({ tickets: st.tickets }) });
+  return { E, S, ledger, setDate: (d) => { st.now = new Date(d).getTime(); }, setTickets: (n) => { st.tickets = n; } };
 }
 const B = (id) => { const b = DATA.BENEFITS.find((x) => x.id === id); assert(b, 'no benefit ' + id); return b; };
 const tx = (date, card, amt, items) => ({ id: 't' + date + card + amt, ts: new Date(date).getTime(), card, amt, items });
@@ -77,7 +77,7 @@ test('IBK PX: 기본 한도 소진이어도 특별할인이 남으면 사용 가
 });
 
 test('마이태그 미등록 쿠폰은 확인 필요', () => {
-  const { E, S } = setup({ s: { cards: ['ibk'], soldier: true } });
+  const { E, S } = setup({ s: { cards: ['ibk'], savings: ['ibk'] } });
   assert.strictEqual(E.evaluate(B('ibk-coupon-kakaot'), 10000).status, 'check');
   S.checks['mytag-kakaot'] = true;
   assert.strictEqual(E.evaluate(B('ibk-coupon-kakaot'), 10000).status, 'ok');
@@ -100,6 +100,12 @@ test('하나 CU: 국군의날은 30%', () => {
   assert.strictEqual(E.estimate(B('hana-cu'), 10000).v, 3000);
 });
 
+test('신한 CGV 10,000원짜리 2매(20,000원) → 8,000원 절감 (매수 입력)', () => {
+  const { E } = setup({ s: { spend: { shinhan: 100000 } }, tickets: 2 });
+  assert.strictEqual(E.estimate(B('shinhan-cgv'), 20000).v, 8000);
+  assert.strictEqual(E.estimate(B('ibk-cgv'), 20000).v, 3000);
+});
+
 test('신한 CGV 6,000원 관람: 1매 15,000원 → 9,000원 절감, KB 35%보다 앞', () => {
   const { E } = setup({ s: { spend: { shinhan: 100000, kb: 100000 } } });
   assert.strictEqual(E.estimate(B('shinhan-cgv'), 15000).v, 9000);
@@ -114,13 +120,14 @@ test('메가커피: 계산 시점 요일로 평일 20%·주말 30%', () => {
   assert.strictEqual(env.E.estimate(B('ibk-mega'), 10000).v, 2000);
 });
 
-test('신한 매월 10일 PX 50%: 10일 2,000원 → 1,000원, 미검증이라 추천 안 함', () => {
+test('신한 PX 매월 10일: 3만원 미만 50%, 일 1회 최대 1천원 (기본 PX와 같은 한도)', () => {
   const env = setup({ s: { cards: ['shinhan'] }, date: '2026-10-10T12:00:00' });
-  assert.strictEqual(env.E.estimate(B('shinhan-px-10th'), 2000).v, 1000);
-  assert.strictEqual(env.E.evaluate(B('shinhan-px-10th'), 2000).status, 'check');
-  assert.notStrictEqual(env.E.bestOf(env.E.rank(env.E.search('PX'), 2000), 2000).b.id, 'shinhan-px-10th');
+  assert.strictEqual(env.E.estimate(B('shinhan-px'), 2000).v, 1000);
+  assert.strictEqual(env.E.estimate(B('shinhan-px'), 20000).v, 1000);
+  assert.strictEqual(env.E.evaluate(B('shinhan-px'), 2000).status, 'ok');
+  assert.strictEqual(env.E.estimate(B('shinhan-px'), 50000).v, 10000); // 3만원 이상은 10일에도 20%
   env.setDate('2026-10-11T12:00:00');
-  assert.strictEqual(env.E.evaluate(B('shinhan-px-10th'), 2000).status, 'no');
+  assert.strictEqual(env.E.estimate(B('shinhan-px'), 2000).v, 400);
 });
 
 test('PX 3만원 경계: 하나 29,999원 → 일 5천 한도, 30,000원 → 20%', () => {
@@ -139,6 +146,81 @@ test('남은 한도: 일 한도와 월 한도를 따로 계산 (하나 PX 12,990
   assert.deepStrictEqual([under.dRem, under.mRem], [1103, 6103]);
   const over = E.remaining(B('hana-px'), 30000);
   assert.deepStrictEqual([over.dRem, over.mRem], [6848, 86848]);
+});
+
+test('IBK 전월 25만원 이상이면 나라 편의점·사랑 교통 대신 All in One', () => {
+  const { E } = setup({ s: { cards: ['ibk'], spend: { ibk: 300000 } } });
+  assert.strictEqual(E.evaluate(B('ibk-store-nara'), 5000).status, 'no');
+  assert.strictEqual(E.evaluate(B('ibk-transit-sarang'), 5000).status, 'no');
+  assert.strictEqual(E.evaluate(B('ibk-aio-store'), 5000).status, 'ok');
+  const low = setup({ s: { cards: ['ibk'], spend: { ibk: 200000 } } });
+  assert.strictEqual(low.E.evaluate(B('ibk-store-nara'), 5000).status, 'ok');
+});
+
+test('IBK All in One 카페: 같은 날 두 번째는 불가', () => {
+  const ledger = [tx('2026-10-15T09:00:00', 'ibk', 5000, [{ b: 'ibk-aio-cafe', k: 'ibk-aio-cafe', v: 500, pooled: true }])];
+  const { E } = setup({ s: { cards: ['ibk'], spend: { ibk: 300000 } }, ledger });
+  assert.strictEqual(E.evaluate(B('ibk-aio-cafe'), 5000).status, 'no');
+});
+
+test('IBK 맘스터치 쿠폰: 분기 1회', () => {
+  const ledger = [tx('2026-10-02T09:00:00', 'ibk', 12000, [{ b: 'ibk-coupon-moms', k: 'ibk-coupon-moms', v: 1000 }])];
+  const { E } = setup({ s: { cards: ['ibk'], savings: ['ibk'], checks: { 'mytag-moms': true } }, ledger });
+  assert.strictEqual(E.estimate(B('ibk-coupon-moms'), 12000).v, 0);
+  const next = setup({ s: { cards: ['ibk'], savings: ['ibk'], checks: { 'mytag-moms': true } }, ledger, date: '2027-01-05T12:00:00' });
+  assert.strictEqual(next.E.estimate(B('ibk-coupon-moms'), 12000).v, 1000); // 다음 분기에는 다시 가능
+});
+
+test('IBK Npay: 2027년에는 기본 월 5회로 돌아감', () => {
+  const items = (d) => [{ b: 'ibk-npay', k: 'ibk-npay', v: 1000, unit: 'point' }];
+  const ledger = [1, 2, 3, 4, 5].map((d) => tx(`2027-01-0${d}T09:00:00`, 'ibk', 10000, items(d)));
+  const { E } = setup({ s: { cards: ['ibk'], spend: { ibk: 1000000 } }, ledger, date: '2027-01-10T12:00:00' });
+  assert.strictEqual(E.evaluate(B('ibk-npay'), 10000).status, 'no');
+  const y26 = setup({ s: { cards: ['ibk'], spend: { ibk: 1000000 } }, ledger: [1, 2, 3, 4, 5].map((d) => tx(`2026-10-0${d}T09:00:00`, 'ibk', 10000, items(d))) });
+  assert.strictEqual(y26.E.evaluate(B('ibk-npay'), 10000).status, 'ok');
+});
+
+test('신한 LG 연 10만P를 다 쓰면 더 적립 안 함', () => {
+  const ledger = [tx('2026-03-01T09:00:00', 'shinhan', 10000000, [{ b: 'shinhan-lg', k: 'shinhan-lg', v: 100000, unit: 'point' }])];
+  const { E } = setup({ s: { cards: ['shinhan'] }, ledger });
+  assert.strictEqual(E.estimate(B('shinhan-lg'), 100000).v, 0);
+});
+
+test('신한 테마파크: 에버랜드 3회 써도 롯데월드는 가능', () => {
+  const ledger = ['03', '05', '07'].map((m) => tx(`2026-${m}-01T10:00:00`, 'shinhan', 60000, [{ b: 'shinhan-park', k: 'shinhan-park', v: 30000 }]));
+  const { E } = setup({ s: { cards: ['shinhan'], spend: { shinhan: 300000 } }, ledger });
+  assert.strictEqual(E.evaluate(B('shinhan-park'), 60000).status, 'no');
+  assert.strictEqual(E.evaluate(B('shinhan-park-lotte'), 60000).status, 'ok');
+});
+
+test('신한 CU 행사상품 5,000원: 500원 즉시할인 + 남은 4,500원의 20% 900원 = 1,400원', () => {
+  const { E } = setup({ s: { cards: ['shinhan'], spend: { shinhan: 200000 } } });
+  const x = E.estimate(B('shinhan-cu'), 5000);
+  assert.strictEqual(x.v, 1400);
+  assert.strictEqual(x.extra.v, 900);
+  const best = E.bestOf(E.rank(E.search('CU'), 5000), 5000);
+  assert.strictEqual(best.b.id, 'shinhan-cu');
+});
+
+test('급여이체는 이번 달 시작이면 다음 달부터 인정', () => {
+  const { E } = setup({ s: { cards: ['hana'], salary: 'hana', since: { salary: '2026-10' } } });
+  assert.strictEqual(E.evaluate(B('hana-taxi'), 10000).status, 'no');
+  const prev = setup({ s: { cards: ['hana'], salary: 'hana', since: { salary: '2026-09' } } });
+  assert.strictEqual(prev.E.evaluate(B('hana-taxi'), 10000).status, 'ok');
+});
+
+test('IBK 복무확인서는 제출 다음 달부터 현역병 인정', () => {
+  const { E } = setup({ s: { cards: ['ibk'], checks: { 'ibk-proof': true }, since: { 'ibk-proof': '2026-10' } } });
+  assert.strictEqual(E.evaluate(B('ibk-px-basic'), 20000).status, 'check');
+  const prev = setup({ s: { cards: ['ibk'], checks: { 'ibk-proof': true }, since: { 'ibk-proof': '2026-09' } } });
+  assert.strictEqual(prev.E.evaluate(B('ibk-px-basic'), 20000).status, 'ok');
+});
+
+test('포인트를 할인과 비교하지 않는 설정이면 포인트 혜택은 뒤로', () => {
+  const { E, S } = setup({ s: { cards: ['ibk', 'shinhan'], spend: { ibk: 300000, shinhan: 200000 } } });
+  S.pointValue = 0;
+  const rows = E.rank([B('ibk-npay'), B('shinhan-coffee')], 10000);
+  assert.strictEqual(rows[0].b.id, 'shinhan-coffee');
 });
 
 test('IBK 쇼핑·배달 월 2회 공유', () => {
@@ -224,6 +306,25 @@ test('PX 섹터 혜택은 모두 PX 검색어로 찾을 수 있다', () => {
   const { E } = setup();
   const found = new Set(E.search('PX').map((b) => b.id));
   DATA.BENEFITS.filter((b) => b.sector === 'px').forEach((b) => assert(found.has(b.id), b.id));
+});
+
+test('설정 검증: 잘못된 값(spend:null 등)은 기본값으로', () => {
+  const r = Engine.sanitizeSettings(DATA, { cards: ['ibk', 'nope'], spend: null, spendAt: { ibk: 'x' }, salary: 'zz', soldier: 'yes', pointValue: 5 });
+  assert.strictEqual(JSON.stringify(r.cards), '["ibk"]');
+  assert.strictEqual(JSON.stringify(r.spend), '{}');
+  assert.strictEqual(JSON.stringify(r.spendAt), '{}');
+  assert.strictEqual(r.salary, null);
+  assert.strictEqual(r.soldier, null);
+  assert.strictEqual(r.pointValue, 1);
+  assert.strictEqual(Engine.sanitizeSettings(DATA, null).cards.length, 0);
+});
+
+test('기록 검증: 음수·빈 항목·모르는 카드는 거부', () => {
+  const ok = { id: 'a', ts: 1, card: 'ibk', amt: 1000, items: [{ b: 'ibk-npay', k: 'ibk-npay', v: 10 }] };
+  assert(Engine.isTx(DATA, ok));
+  assert(!Engine.isTx(DATA, Object.assign({}, ok, { card: 'x' })));
+  assert(!Engine.isTx(DATA, Object.assign({}, ok, { items: [] })));
+  assert(!Engine.isTx(DATA, Object.assign({}, ok, { items: [{ b: 'ibk-npay', k: 'ibk-npay', v: -5 }] })));
 });
 
 console.log('배포 파일 검증');

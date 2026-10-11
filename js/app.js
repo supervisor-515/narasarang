@@ -26,13 +26,13 @@
   const KEY = 'narasarang.settings.v1';
   const LEDGER_KEY = 'narasarang.ledger.v2';
   const LEDGER_V1 = 'narasarang.ledger.v1';
-  const defaults = () => ({
-    cards: [], salary: null, savings: [], spend: {}, spendAt: {}, firstUse: {},
-    soldier: null, checks: {}, showAll: false, onboarded: false,
-  });
-  let S = Object.assign(defaults(), read(KEY) || {});
+  // 저장된 값은 항상 검증해서 씀 (잘못된 백업·옛 형식에도 앱이 멈추지 않게)
+  const clean = (raw) => window.Engine.sanitizeSettings(DATA, raw);
+  const defaults = () => clean({});
+  let S = clean(read(KEY));
   let LEDGER = [];
-  const E = window.Engine.create(DATA, { getS: () => S, getLedger: () => LEDGER });
+  const input = { tickets: 1 };
+  const E = window.Engine.create(DATA, { getS: () => S, getLedger: () => LEDGER, getInput: () => input });
   const { CARD, SECTOR, BANK, BENEFIT, NEEDS, won, man, ymd, thisMonth } = E;
 
   // 예전 설정: 사용액 입력 월이 없으면 이번 달로 간주
@@ -46,9 +46,7 @@
 
   // ───────── 결제 기록 (거래 단위) ─────────
   // { id, ts, card, amt, items: [{ b, k, v, pooled, unit }] } — 한 번의 결제에 기본·추가 혜택을 묶음
-  const isTx = (t) => t && typeof t.id === 'string' && Number.isFinite(t.ts) && CARD[t.card] && Number.isFinite(t.amt)
-    && Array.isArray(t.items) && t.items.length > 0
-    && t.items.every((i) => i && typeof i.b === 'string' && typeof i.k === 'string' && Number.isFinite(i.v));
+  const isTx = (t) => window.Engine.isTx(DATA, t);
   const fixId = (x) => LEGACY_IDS[x] || x;
   const unitOf = (b) => (b && (b.type === '적립' || (b.calc && b.calc.steps)) ? 'point' : 'won');
 
@@ -86,10 +84,10 @@
   const owned = (id) => S.cards.includes(id);
   const visibleCards = () => (S.showAll || S.cards.length === 0 ? CARDS.map((c) => c.id) : S.cards);
   const pressed = (on) => `aria-pressed="${on ? 'true' : 'false'}"`;
-  const fmtV = (v, unit) => (unit === 'point' ? v.toLocaleString('ko-KR') + 'P' : won(v));
+  const fmtV = (v, unit) => (unit === 'use' ? '사용 1회' : unit === 'point' ? v.toLocaleString('ko-KR') + 'P' : won(v));
   const txSums = (txs) => {
     const sum = { won: 0, point: 0 };
-    txs.forEach((t) => t.items.forEach((i) => { sum[i.unit === 'point' ? 'point' : 'won'] += i.v; }));
+    txs.forEach((t) => t.items.forEach((i) => { if (i.unit !== 'use') sum[i.unit === 'point' ? 'point' : 'won'] += i.v; }));
     return sum;
   };
   const monthTx = (m, card) => LEDGER.filter((t) => ymd(t.ts).startsWith(m) && (!card || t.card === card));
@@ -112,6 +110,7 @@
       const n = NEEDS[k];
       if (n.flag) return `<button class="flag" data-flag="${esc(n.flag)}">✓ ${esc(n.flagLabel)}</button>`;
       if (k === 'soldier') return `<span class="flag-row">현역 병사인가요? <button class="flag" data-soldier="1">네</button><button class="flag ghost" data-soldier="0">아니요</button></span>`;
+      if (k === 'ibkSoldier') return `<span class="flag-row">${esc(n.how)} <button class="flag" data-go="settings">설정에서 입력</button></span>`;
       return '';
     }).join('');
   }
@@ -147,6 +146,7 @@
           ${used.mCnt ? `<span class="pill used">이번 달 ${used.mSum ? fmtV(used.mSum, unitOf(b)) + ' · ' : ''}${used.mCnt}회</span>` : ''}
         </div>
         ${canConfirm ? confirmBtn(b, x, e) : ''}
+        ${!b.calc && b.lim && !b.addon && (e.status === 'ok' || e.status === 'check') ? `<button class="confirm ghost" data-use="${esc(b.id)}">사용했어요 · 횟수 기록</button>` : ''}
         <div class="detail">
           <p><b>${esc(c.name)}</b> · ${esc(b.group)}</p>
           ${b.limit ? `<p>한도 · ${esc(b.limit)}</p>` : ''}
@@ -156,7 +156,7 @@
           ${personal ? `<p class="me">${esc(personal)}</p>` : ''}
           ${b.notes && b.notes.length ? `<ul>${b.notes.map((n) => `<li>${esc(n)}</li>`).join('')}</ul>` : ''}
           ${!ui.amount && b.calc && !b.addon && ui.tab !== 'cards' ? '<p class="me">위에 결제 금액을 넣으면 할인액 계산과 결제 기록을 할 수 있어요</p>' : ''}
-          <p class="src">출처 · ${esc(src.doc)} (${esc(src.date)}) · <a href="${esc(src.url)}" target="_blank" rel="noopener">공식 홈페이지</a></p>
+          <p class="src">출처 · ${esc(src.doc)} (${esc(src.date)}) · 공식 페이지 대조 ${esc(src.checked)} · <a href="${esc(src.url)}" target="_blank" rel="noopener">공식 상품 페이지</a></p>
         </div>
       </div>`;
   }
@@ -219,6 +219,10 @@
           <input id="amt" inputmode="numeric" pattern="[0-9]*" enterkeyhint="done" autocomplete="off" placeholder="금액 입력" value="${ui.amount ? ui.amount.toLocaleString('ko-KR') : ''}">
           <span class="amt-won ${ui.amount ? '' : 'off'}">원</span>
           <span class="amt-measure" aria-hidden="true"></span>
+        </div>
+        <div class="tickets" hidden>
+          <span>티켓 매수 <small>정액 관람 혜택 계산용</small></span>
+          <span class="stepper"><button data-tix="-1" aria-label="한 장 빼기">−</button><b id="tixN">${input.tickets}매</b><button data-tix="1" aria-label="한 장 더하기">+</button></span>
         </div>
         <div class="amt-add">
           <button data-add="1000">+1천</button><button data-add="10000">+1만</button><button data-add="50000">+5만</button><button data-add="100000">+10만</button>
@@ -413,6 +417,14 @@
       <option value="-1" ${cur === '-1' ? 'selected' : ''}>지난달 등록</option></select>`;
   }
 
+  function sinceSelect(key, label) {
+    const m = S.since[key];
+    const cur = m === thisMonth() ? '0' : '-1';
+    return `<div class="kv"><span>${esc(label)}</span><select class="sel" data-since="${esc(key)}">
+      <option value="-1" ${cur === '-1' ? 'selected' : ''}>지난달 이전부터</option>
+      <option value="0" ${cur === '0' ? 'selected' : ''}>이번 달부터</option></select></div>`;
+  }
+
   function cardInfoSection(c) {
     const lim = E.cardLimit(c.id);
     const sp = E.spendOf(c.id);
@@ -427,7 +439,7 @@
         <div class="tierlbl">${c.tiers.map(([m]) => `<span>${man(m)}</span>`).join('')}</div>
         <div class="kv" style="margin-top:8px"><span>결제계좌</span><b style="font-size:13px">${esc(c.account)}</b></div>
         <div class="kv"><span>고객센터</span><b>${esc(c.contact)}</b></div>
-        <div class="kv"><span>출처</span><b style="font-size:13px"><a href="${esc(c.source.url)}" target="_blank" rel="noopener">${esc(c.source.doc)} (${esc(c.source.date)})</a></b></div>
+        <div class="kv"><span>출처</span><b style="font-size:13px"><a href="${esc(c.source.url)}" target="_blank" rel="noopener">${esc(c.source.doc)} (${esc(c.source.date)})</a> · ${esc(c.source.checked)} 대조</b></div>
         <p class="hint">💡 ${esc(c.firstUse)}</p>
         <p class="hint">실적 제외: ${esc(c.excluded)}</p>
       </div>`;
@@ -453,15 +465,21 @@
 
     html += `<div class="section"><h2>급여 받는 은행 <small>하나만 선택</small></h2><div class="opts" role="group" aria-label="급여 은행">`;
     BANKS.forEach((b) => { html += `<button class="opt ${S.salary === b.id ? 'on' : ''}" ${pressed(S.salary === b.id)} data-salary="${b.id}">${esc(b.name)}</button>`; });
-    html += `</div><p class="hint">국군재정관리단 급여이체 은행이에요. 하나(Desire·휴대폰케어), IBK(나라·사랑 실적 면제, PX 급여이체자 횟수, 급여이체 프로모션), KB(금융수수료 면제) 혜택에 반영돼요.</p></div>`;
+    html += `</div>${S.salary ? sinceSelect('salary', '언제부터 이 은행으로 받았나요?') : ''}<p class="hint">국군재정관리단 급여이체 은행이에요. 첫 급여를 받은 다음 달부터 인정돼요. 하나(Desire·휴대폰케어), IBK(나라·사랑 실적 면제, PX 급여이체자 횟수, 급여이체 프로모션), KB(금융수수료 면제) 혜택에 반영돼요.</p></div>`;
 
     html += `<div class="section"><h2>적금 든 은행 <small>여러 개 선택</small></h2><div class="opts" role="group" aria-label="적금 은행">`;
     BANKS.forEach((b) => { html += `<button class="opt ${S.savings.includes(b.id) ? 'on' : ''}" ${pressed(S.savings.includes(b.id))} data-saving="${b.id}">${esc(b.name)}</button>`; });
-    html += `</div><p class="hint">장병내일준비적금 가입 은행이에요. IBK 적금이 있으면 IBK PX 할인에서 별도 증빙 없이 현역병으로 인정돼요.</p></div>`;
+    html += `</div>${S.savings.includes('ibk') ? sinceSelect('saving-ibk', 'IBK 적금은 언제 가입했나요?') : ''}<p class="hint">장병내일준비적금 가입 은행이에요. 전월 말일 기준 IBK 적금이 있으면 IBK PX 할인에서 별도 증빙 없이 현역병으로 인정돼요.</p></div>`;
 
     if (!S.cards.length || owned('ibk')) {
       const flags = Object.values(NEEDS).filter((n) => n.flag);
+      const proof = !S.checks['ibk-proof'] ? '' : (S.since['ibk-proof'] === thisMonth() ? '0' : '-1');
       html += `<div class="section"><h2>IBK 추가 조건 <small>해당하면 켜기</small></h2>
+        <div class="kv"><span>복무확인서·건강보험자격득실확인서 제출<br><small class="muted">제출한 다음 달부터 현역병 인정</small></span>
+          <select class="sel" data-proof aria-label="IBK 서류 제출 시점">
+            <option value="" ${proof === '' ? 'selected' : ''}>제출 안 함</option>
+            <option value="-1" ${proof === '-1' ? 'selected' : ''}>지난달 이전 제출</option>
+            <option value="0" ${proof === '0' ? 'selected' : ''}>이번 달 제출</option></select></div>
         ${flags.map((n) => `<label class="switch"><span>${esc(n.flagLabel)}</span><input type="checkbox" data-check="${esc(n.flag)}" ${S.checks[n.flag] ? 'checked' : ''}></label>`).join('')}
         <p class="hint">마이태그는 BC카드 앱·홈페이지에서 프로모션별로 등록해요. 등록하지 않으면 쿠폰 혜택은 ‘확인 필요’로 표시돼요.</p></div>`;
     }
@@ -475,6 +493,9 @@
         <label><small>신규 발급</small>${firstSelect(id)}</label></div></div>`;
     });
     html += `<p class="hint">일시불·할부 이용금액 기준 (세금·공과금 등 제외). 달이 바뀌면 다시 입력해달라고 알려드려요. 첫 사용 등록 월과 다음 달은 신규 발급 실적이 인정돼요.</p></div>`;
+
+    html += `<div class="section"><div class="kv"><span><b>포인트 비교 기준</b><br><span class="muted">추천 순위를 정할 때 포인트를 어떻게 셀까요?</span></span>
+      <select class="sel" data-pv aria-label="포인트 비교 기준"><option value="1" ${S.pointValue === 1 ? 'selected' : ''}>1P = 1원</option><option value="0" ${S.pointValue === 0 ? 'selected' : ''}>할인 우선</option></select></div></div>`;
 
     html += `<div class="section"><label class="switch"><span><b>없는 카드 혜택도 보기</b><br><span class="muted">다른 카드와 비교할 때 켜세요</span></span><input type="checkbox" id="showAll" ${S.showAll ? 'checked' : ''}></label></div>`;
 
@@ -508,6 +529,8 @@
       if (on) t.setAttribute('aria-current', 'page'); else t.removeAttribute('aria-current');
     });
     fitAmount();
+    if (ui.tab === 'home' && ui.q.trim()) showTickets(E.search(ui.q));
+    if (ui.tab === 'sector') showTickets(BENEFITS.filter((b) => b.sector === ui.sector));
     if (keepScroll) window.scrollTo(0, y); else window.scrollTo(0, 0);
   }
 
@@ -522,9 +545,16 @@
       $('.amt-label').textContent = `‘${ui.q.trim()}’에서 얼마 결제하나요?`;
       res.innerHTML = resultsHTML(rows);
       $('.search').classList.toggle('has-value', !!ui.q);
+      showTickets(rows.map((r) => r.b));
     } else if (ui.tab === 'sector' && res) {
       res.innerHTML = sectorResults(ranked(BENEFITS.filter((b) => b.sector === ui.sector)));
     }
+  }
+
+  // 관람권처럼 매수에 따라 달라지는 혜택이 있을 때만 매수 입력을 보여줌
+  function showTickets(list) {
+    const el = $('.tickets');
+    if (el) el.hidden = !list.some((b) => b.calc && b.calc.ticket);
   }
 
   function setAmount(n) {
@@ -579,6 +609,18 @@
     toast(`${c.short} ${fmtV(x.v, x.unit)} 예상 혜택을 기록했어요${left.rem === 0 ? ` · ${left.why}` : isFinite(left.rem) ? ` · 남은 한도 ${won(left.rem)}` : ''}`);
   }
 
+  // 무료 혜택(팝콘·라운지 등)은 금액 없이 사용 횟수만 기록
+  function confirmUse(id) {
+    const b = BENEFIT[id];
+    if (!b) return;
+    const ts = Date.now();
+    LEDGER.push({ id: 't' + ts + '-' + Math.random().toString(36).slice(2, 7), ts, card: b.card, amt: ui.amount || 0, items: [{ b: b.id, k: E.keyOf(b), v: 0, pooled: false, unit: 'use' }] });
+    if (!saveLedger()) { LEDGER.pop(); toast('⚠️ 기록을 저장하지 못했어요'); return; }
+    const left = E.remaining(b, null);
+    render(true);
+    toast(`${CARD[b.card].short} ${b.title} 사용을 기록했어요${left.rem === 0 ? ` · ${left.why}` : ''}`);
+  }
+
   function cancelTx(id) {
     const t = LEDGER.find((x) => x.id === id);
     if (!t || !confirm(`${won(t.amt)} 결제 기록을 취소할까요?\n함께 기록된 혜택 ${t.items.length}개가 모두 되돌려져요.`)) return;
@@ -606,12 +648,26 @@
       let d;
       try { d = JSON.parse(r.result); } catch (e) { toast('⚠️ 백업 파일을 읽지 못했어요'); return; }
       if (!d || d.app !== 'narasarang' || !d.settings || !Array.isArray(d.ledger)) { toast('⚠️ 나라사랑 혜택 백업 파일이 아니에요'); return; }
-      const tx = d.ledger.map((t) => Object.assign({}, t, { items: (t.items || []).map((i) => Object.assign({}, i, { b: fixId(i.b), k: fixId(i.k) })) })).filter(isTx);
-      if (!confirm(`설정과 결제 기록 ${tx.length}건으로 바꿀까요? 지금 기록은 덮어써져요.`)) return;
-      const prevS = S; const prevL = LEDGER;
-      S = Object.assign(defaults(), d.settings, { onboarded: true });
+      const all = d.ledger.map((t) => (t && Array.isArray(t.items) ? Object.assign({}, t, { items: t.items.map((i) => Object.assign({}, i, { b: fixId(i && i.b), k: fixId(i && i.k) })) }) : t));
+      // 알 수 없는 혜택·음수·형식 오류 기록은 제외
+      const tx = all.filter(isTx).filter((t) => t.items.every((i) => BENEFIT[i.b]));
+      const dropped = all.length - tx.length;
+      if (!confirm(`설정과 결제 기록 ${tx.length}건으로 바꿀까요?${dropped ? ` (형식이 맞지 않는 ${dropped}건 제외)` : ''} 지금 기록은 덮어써져요.`)) return;
+      const nextS = Object.assign(clean(d.settings), { onboarded: true });
+      let raw;
+      try { raw = [localStorage.getItem(KEY), localStorage.getItem(LEDGER_KEY)]; } catch (e) { raw = [null, null]; }
+      const restore = () => {
+        try {
+          [[KEY, raw[0]], [LEDGER_KEY, raw[1]]].forEach(([k, v]) => { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, v); });
+        } catch (e) { /* 원래 값으로 되돌리기 실패 — 아래 안내 */ }
+      };
+      if (!store(KEY, nextS) || !store(LEDGER_KEY, { v: 2, tx })) {
+        restore();
+        toast('⚠️ 가져온 내용을 저장하지 못해 원래 상태로 되돌렸어요');
+        return;
+      }
+      S = nextS;
       LEDGER = tx;
-      if (!store(KEY, S) || !saveLedger()) { S = prevS; LEDGER = prevL; toast('⚠️ 가져온 내용을 저장하지 못했어요'); return; }
       render(true);
       toast(`결제 기록 ${tx.length}건을 가져왔어요`);
     };
@@ -624,6 +680,13 @@
     if (ev.target.closest('a, input, select')) return;
     const d = t.dataset;
     if (d.confirm) { confirmPay(d.confirm); return; }
+    if (d.use) { confirmUse(d.use); return; }
+    if (d.tix) {
+      input.tickets = Math.min(10, Math.max(1, input.tickets + Number(d.tix)));
+      $('#tixN').textContent = input.tickets + '매';
+      refreshResults();
+      return;
+    }
     if (d.cancel) { cancelTx(d.cancel); return; }
     if (d.flag) { S.checks[d.flag] = true; saveS(); render(true); return; }
     if (d.soldier) { S.soldier = d.soldier === '1'; saveS(); render(true); return; }
@@ -646,9 +709,14 @@
       S.cards = owned(d.own) ? S.cards.filter((x) => x !== d.own) : CARDS.map((c) => c.id).filter((id) => id === d.own || owned(id));
       saveS(); render(true); return;
     }
-    if (d.salary) { S.salary = S.salary === d.salary ? null : d.salary; saveS(); render(true); return; }
+    if (d.salary) {
+      S.salary = S.salary === d.salary ? null : d.salary;
+      if (S.salary) S.since.salary = E.addMonth(thisMonth(), -1); else delete S.since.salary;
+      saveS(); render(true); return;
+    }
     if (d.saving) {
       S.savings = S.savings.includes(d.saving) ? S.savings.filter((x) => x !== d.saving) : [...S.savings, d.saving];
+      if (S.savings.includes(d.saving)) S.since['saving-' + d.saving] = E.addMonth(thisMonth(), -1); else delete S.since['saving-' + d.saving];
       saveS(); render(true); return;
     }
     if (t.id === 'clear') { ui.q = ''; ui.amount = 0; render(); focusEnd('#q'); return; }
@@ -682,7 +750,13 @@
       if (el.value === '') delete S.firstUse[d.first]; else S.firstUse[d.first] = E.addMonth(thisMonth(), Number(el.value));
       saveS(); render(true);
     }
-    if (d.check) { if (el.checked) S.checks[d.check] = true; else delete S.checks[d.check]; saveS(); }
+    if (d.check) { if (el.checked) S.checks[d.check] = true; else delete S.checks[d.check]; saveS(); render(true); }
+    if (d.since) { S.since[d.since] = E.addMonth(thisMonth(), Number(el.value)); saveS(); render(true); }
+    if (d.proof !== undefined) {
+      if (el.value === '') { delete S.checks['ibk-proof']; delete S.since['ibk-proof']; } else { S.checks['ibk-proof'] = true; S.since['ibk-proof'] = E.addMonth(thisMonth(), Number(el.value)); }
+      saveS(); render(true);
+    }
+    if (d.pv !== undefined) { S.pointValue = Number(el.value); saveS(); }
     if (d.txdate) {
       const t = LEDGER.find((x) => x.id === d.txdate);
       if (!t || !el.value) return;
@@ -714,6 +788,11 @@
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => { el.hidden = true; }, 2600);
   }
+
+  window.addEventListener('storage', (ev) => {
+    if (ev.key === KEY) { S = clean(read(KEY)); render(true); }
+    if (ev.key === LEDGER_KEY) { LEDGER = loadLedger(); render(true); }
+  });
 
   render();
 

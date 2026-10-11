@@ -29,9 +29,13 @@
  *  ctx      : 결제 전 확인할 이용 조건 (앱 결제만, 행사상품만 등) — 있으면 '조건 충족 시 예상 혜택'으로 표시
  *  need     : 자격 조건 키 (engine.js NEEDS) — 확인 안 되면 '조건 확인 필요'
  *  verify   : 출처 검증이 덜 된 혜택 — 항상 '확인 필요'로 표시하고 추천하지 않음
+ *  excludeFrom : 전월 실적이 이 금액 이상이면 상위 서비스로 대체되어 제공 안 됨 (IBK 나라·사랑 → All in One)
+ *  extraAfter  : extra 혜택을 기본 혜택(현장할인)을 뺀 금액에 계산 (순차 중복)
  *  calc 추가 : days {dates:['MM-DD'], tiers} 특정일 할인율 / weekend 주말 할인율 / dom 적용 일자(매월 n일)
  *             below 이 금액 미만만 / ticket {pay|off, max} 관람권(1매 15,000원 기준 매수 추정)
- *  lim 추가  : days / notDays 특정일에만(또는 제외) 적용되는 한도
+ *  lim 추가  : days / notDays 특정일에만(또는 제외) 적용되는 한도, quarterCount 분기 횟수, year 연간 금액
+ *  calc.days : { dates: ['MM-DD'] 또는 dom: [매월 n일], tiers } 그날만 다른 할인율
+ *  ticket    : 결제 총액 ÷ 입력한 매수로 1매 가격 계산
  *
  * card.first : 신규 발급(첫 사용 등록 월~다음 달) 실적 인정 { spend, limit?, groups, except? }
  * card.source: 출처 문서와 기준 월, 공식 URL
@@ -58,7 +62,7 @@
       excluded: '세금·공과금, 아파트관리비, 4대보험, 상품권·선불카드 구매, 하나머니 충전, 국내 ATM 등',
       contact: '하나카드 1800-1111',
       first: { spend: 100000, groups: ['Basic'] },
-      source: { doc: '하나카드 상품설명서', date: '2025-12', url: 'https://www.hanacard.co.kr' },
+      source: { doc: '하나카드 상품설명서', date: '2025-12', checked: '2026-10-11', url: 'https://www.hanacard.co.kr/OPI41000000D.web?CD_PD_SEQ=18813&mID=PI41018813P&schID=pcd' },
     },
     {
       id: 'ibk', name: 'IBK 나라사랑카드', short: 'IBK', bank: 'ibk',
@@ -70,7 +74,7 @@
       excluded: '세금·공과금, 상품권 구매, 교통카드 이용금액 등',
       contact: 'IBK기업은행 1566-2566',
       first: { spend: 250000, groups: ['나라', '사랑', 'All in One', 'Npay 포인트'] },
-      source: { doc: 'IBK기업은행 상품설명서', date: '2025-12', url: 'https://narasarang.ibk.co.kr' },
+      source: { doc: 'IBK기업은행 상품설명서', date: '2025-12', checked: '2026-10-11', url: 'https://www.ibk.co.kr/cardbiz/detailBizNew.ibk?PDLN_CD=12&PDGR_CD=11&PDTM_CD=296&PDCD=0001&pageId=CA01030000' },
     },
     {
       id: 'shinhan', name: '신한 나라사랑카드', short: '신한', bank: 'shinhan',
@@ -82,7 +86,7 @@
       excluded: '세금·공과금, 4대보험, 상품권·선불카드, 무이자할부, 포인트 사용분 등',
       contact: '신한카드 1544-7000',
       first: { spend: 100000, groups: ['Life', 'Special'] },
-      source: { doc: '신한카드 상품설명서', date: '2025-11', url: 'https://www.shinhancard.com/pconts/html/card/apply/check/2013660_2206.html' },
+      source: { doc: '신한카드 상품설명서', date: '2025-11', checked: '2026-10-11', url: 'https://www.shinhancard.com/pconts/html/card/apply/check/1236922_2206.html' },
     },
     {
       id: 'kb', name: 'KB국민 나라사랑카드', short: 'KB', bank: 'kb',
@@ -94,7 +98,7 @@
       excluded: '후불교통 및 해외 이용금액은 실적에서 제외',
       contact: 'KB국민카드 1588-1688',
       first: { spend: 100000, limit: 10000, groups: ['꿈꾸고 즐기는'], except: ['transit', 'train', 'telecom'] },
-      source: { doc: 'KB국민카드 상품설명서', date: '2026-04', url: 'https://card.kbcard.com' },
+      source: { doc: 'KB국민카드 상품설명서', date: '2026-04', checked: '2026-10-11', url: 'https://card.kbcard.com/CRD/DVIEW/HCAMCXPRICAC0076?cooperationcode=04120&mainCC=a' },
     },
   ];
 
@@ -121,6 +125,8 @@
 
   // 국군의날(10.1)·현충일(6.6)
   const MIL_DAYS = ['10-01', '06-06'];
+  // IBK Npay 추가 적립(월 7·10회) 프로모션 종료
+  const NPAY_EXTRA_END = new Date('2026-12-31T23:59:59').getTime();
 
   const IBK_PX_PERSONAL = (s) => {
     if (s.salary === 'ibk') return '내 조건: IBK 급여이체자 → 3만원 미만 월 6회, 3만원 이상 횟수 제한 없음, 특별할인 연 2회';
@@ -157,7 +163,7 @@
       kw: '앱스토어 플레이스토어', rate: 10, value: '10%', type: '캐시백', limit: '월 2천원',
       req: { salary: 'hana' }, calc: { tiers: [[0, 10]], cap: 2000 },
       notes: ['유튜브·넷플릭스는 정기결제만', '네이버플러스·쿠팡와우는 월 정기결제만 (연 정기결제 1회만)'] },
-    { id: 'hana-cgv-popcorn', card: 'hana', sector: 'movie', group: 'Desire · 하나은행 급여이체', title: 'CGV 팝콘 스몰세트 무료',
+    { id: 'hana-cgv-popcorn', lim: [{ monthCount: 1, yearCount: 6 }], card: 'hana', sector: 'movie', group: 'Desire · 하나은행 급여이체', title: 'CGV 팝콘 스몰세트 무료',
       where: 'CGV', rate: 40, value: '팝콘 무료', type: '무료', limit: '월 1회 · 연 6회',
       req: { salary: 'hana' }, notes: ['하나페이 > 밀리큐브 > 서비스안내 > 문화/생활 > CGV에서 방법 확인'] },
 
@@ -197,7 +203,7 @@
       where: '에버랜드, 롯데월드', rate: 50, value: '50%', type: '현장할인', limit: '월 1회 · 본인 1인 1매',
       req: { spend: 100000, pooled: true }, calc: { tiers: [[0, 50]] } },
 
-    { id: 'hana-travel', card: 'hana', sector: 'travel', group: '해외 · 트래블로그', title: '해외 수수료 면제',
+    { id: 'hana-travel', ctx: ['외화 하나머니 결제로 설정했을 때만 (체크 결제 모드는 수수료 부과)'], card: 'hana', sector: 'travel', group: '해외 · 트래블로그', title: '해외 수수료 면제',
       where: '해외 가맹점, 해외 ATM (외화 하나머니 결제 시)', kw: '트래블로그 환전', rate: 3, value: '수수료 0원', type: '면제',
       limit: '해외서비스 수수료 + 국제브랜드 수수료(1.1%) 면제',
       notes: ['하나머니 앱에서 외화 충전 후 사용', '하나페이 > 밀리큐브 > 카드서비스 관리 > 해외결제설정에서 전환'] },
@@ -205,7 +211,7 @@
       where: '하나손해보험 단체보험', kw: '보험 상해', rate: 0, value: '무료 가입', type: '무료',
       limit: '상해사망/후유장해 최대 5천만원, 군 복무 중 폭발·파열·화재 최대 4억원 등',
       notes: ['문의: 하나손해보험 1566-3000'] },
-    { id: 'hana-phonecare', card: 'hana', sector: 'finance', group: '금융 서비스', title: '나라사랑 휴대폰케어',
+    { id: 'hana-phonecare', ctx: ['가입일부터 92일 이후 파손분부터 보상'], card: 'hana', sector: 'finance', group: '금융 서비스', title: '나라사랑 휴대폰케어',
       where: '휴대폰 파손 수리', kw: '휴대폰 파손 액정', rate: 0, value: '최대 10만원', type: '무료',
       limit: '파손 수리비 최대 10만원 (자기부담 3만원 포함), 20개월 무료',
       req: { salary: 'hana' }, notes: ['급여이체 조건 충족 다음 달부터 자동 가입', '가입일부터 92일 이후 보상 가능', '문의: NICE평가정보 1600-1533'] },
@@ -223,9 +229,9 @@
       calc: { fixed: 50000, min: 200000 }, personal: IBK_PX_PERSONAL,
       notes: ['기본할인과 중복 적용 — 기본할인으로 결제 확정하면 함께 기록돼요', '예) PX 20만원 결제 → 기본할인 5만 + 특별할인 5만 = 10만원 할인'] },
 
-    { id: 'ibk-store-nara', card: 'ibk', sector: 'store', group: '나라 · 전월 8만원', title: '편의점 청구할인', lim: [{ monthCount: 2 }],
+    { id: 'ibk-store-nara', excludeFrom: 250000, card: 'ibk', sector: 'store', group: '나라 · 전월 8만원', title: '편의점 청구할인', lim: [{ monthCount: 2 }],
       where: 'CU, GS25, 이마트24', kw: '씨유 emart24', rate: 10, value: '10%', type: '청구할인', limit: '월 2회 · 1회 1천원',
-      req: { spend: 80000, waiveSalary: 'ibk' }, calc: { tiers: [[0, 10]], cap: 1000 } },
+      req: { spend: 80000, waiveSalary: 'ibk' }, notes: ['전월 25만원 이상이면 All in One 편의점 할인이 대신 적용돼요 (나라 편의점 미제공)'], calc: { tiers: [[0, 10]], cap: 1000 } },
     { id: 'ibk-gs25-extra', ctx: ['음료(주류 제외)·빙과·신선식품만'], card: 'ibk', sector: 'store', group: '추가 · 실적 무관', title: 'GS25 추가 현장할인', lim: [{ dayCount: 1 }],
       where: 'GS25 (음료·빙과·신선식품)', rate: 10, value: '10%', type: '현장할인', limit: '1일 1회',
       calc: { tiers: [[0, 10]] }, notes: ['주류 제외'] },
@@ -248,9 +254,9 @@
     { id: 'ibk-outback', ctx: ['현장 결제'], card: 'ibk', sector: 'food', group: '사랑 · 전월 20만원', title: '아웃백 현장할인', lim: [{ monthCount: 1 }],
       where: '아웃백스테이크하우스', rate: 20, value: '20%', type: '현장할인', limit: '월 1회 · 1회 4만원',
       req: { spend: 200000, waiveSalary: 'ibk' }, calc: { tiers: [[0, 20]], cap: 40000 } },
-    { id: 'ibk-transit-sarang', ctx: ['후불교통 기능으로 탑승'], card: 'ibk', sector: 'transit', group: '사랑 · 전월 20만원', title: '버스·지하철 청구할인', lim: [{ month: 2000 }],
+    { id: 'ibk-transit-sarang', excludeFrom: 250000, ctx: ['후불교통 기능으로 탑승'], card: 'ibk', sector: 'transit', group: '사랑 · 전월 20만원', title: '버스·지하철 청구할인', lim: [{ month: 2000 }],
       where: '전국 시내버스, 지하철 (후불교통)', rate: 10, value: '10%', type: '청구할인', limit: '월 2천원',
-      req: { spend: 200000, waiveSalary: 'ibk' }, calc: { tiers: [[0, 10]], cap: 2000 } },
+      req: { spend: 200000, waiveSalary: 'ibk' }, notes: ['전월 25만원 이상이면 All in One 대중교통 할인이 대신 적용돼요 (사랑 대중교통 미제공)'], calc: { tiers: [[0, 10]], cap: 2000 } },
     { id: 'ibk-telecom', ctx: ['이동통신요금 자동납부'], card: 'ibk', sector: 'telecom', group: '사랑 · 전월 20만원', title: '이동통신 자동납부', lim: [{ monthCount: 1 }],
       where: '이동통신요금 자동납부', kw: 'skt kt lg', rate: 5, value: '5%', type: '청구할인', limit: '월 1회 · 2천원',
       req: { spend: 200000, waiveSalary: 'ibk' }, calc: { tiers: [[0, 5]], cap: 2000 } },
@@ -263,63 +269,63 @@
       req: { spend: 250000, pooled: true }, calc: { tiers: [[0, 20]] } },
     { id: 'ibk-aio-store', card: 'ibk', sector: 'store', group: 'All in One · 전월 25만원', title: '편의점 청구할인', lim: [{ dayCount: 2, monthCount: 10 }],
       where: 'CU, GS25, 이마트24', rate: 10, value: '10%', type: '청구할인', limit: '1일 2회 · 월 10회 · 건당 1천원',
+      req: { spend: 250000, pooled: true }, notes: ['IBK 상품 안내는 1일 2회, BC카드 안내는 1일 1회로 표기가 달라요 — 발급사(IBK) 기준'], calc: { tiers: [[0, 10]], cap: 1000 } },
+    { id: 'ibk-aio-taxi', card: 'ibk', sector: 'taxi', group: 'All in One · 전월 25만원', title: '카카오T 청구할인', lim: [{ dayCount: 1, monthCount: 2 }],
+      where: '카카오T', kw: '카카오택시', rate: 10, value: '10%', type: '청구할인', limit: '1일 1회 · 월 2회 · 건당 1천원',
       req: { spend: 250000, pooled: true }, calc: { tiers: [[0, 10]], cap: 1000 } },
-    { id: 'ibk-aio-taxi', card: 'ibk', sector: 'taxi', group: 'All in One · 전월 25만원', title: '카카오T 청구할인', lim: [{ monthCount: 2 }],
-      where: '카카오T', kw: '카카오택시', rate: 10, value: '10%', type: '청구할인', limit: '월 2회 · 건당 1천원',
+    { id: 'ibk-aio-hospital', card: 'ibk', sector: 'life', group: 'All in One · 전월 25만원', title: '병원·약국 청구할인', lim: [{ dayCount: 1, monthCount: 2 }],
+      where: '전국 병원, 약국', rate: 10, value: '10%', type: '청구할인', limit: '1일 1회 · 월 2회 · 건당 1천원',
       req: { spend: 250000, pooled: true }, calc: { tiers: [[0, 10]], cap: 1000 } },
-    { id: 'ibk-aio-hospital', card: 'ibk', sector: 'life', group: 'All in One · 전월 25만원', title: '병원·약국 청구할인', lim: [{ monthCount: 2 }],
-      where: '전국 병원, 약국', rate: 10, value: '10%', type: '청구할인', limit: '월 2회 · 건당 1천원',
+    { id: 'ibk-aio-cafe', card: 'ibk', sector: 'cafe', group: 'All in One · 전월 25만원', title: '카페 청구할인', lim: [{ dayCount: 1, monthCount: 2 }],
+      where: '스타벅스, 메가커피', rate: 10, value: '10%', type: '청구할인', limit: '1일 1회 · 월 2회 · 건당 1천원',
       req: { spend: 250000, pooled: true }, calc: { tiers: [[0, 10]], cap: 1000 } },
-    { id: 'ibk-aio-cafe', card: 'ibk', sector: 'cafe', group: 'All in One · 전월 25만원', title: '카페 청구할인', lim: [{ monthCount: 2 }],
-      where: '스타벅스, 메가커피', rate: 10, value: '10%', type: '청구할인', limit: '월 2회 · 건당 1천원',
+    { id: 'ibk-aio-shop', card: 'ibk', sector: 'shop', group: 'All in One · 전월 25만원', title: '쇼핑 청구할인', lim: [{ dayCount: 1, monthCount: 2 }], limKey: 'ibk-aio-shop',
+      where: '네이버플러스스토어, 쿠팡, 무신사, G마켓', rate: 10, value: '10%', type: '청구할인', limit: '1일 1회 · 쇼핑·배달 통합 월 2회 · 건당 1천원',
       req: { spend: 250000, pooled: true }, calc: { tiers: [[0, 10]], cap: 1000 } },
-    { id: 'ibk-aio-shop', card: 'ibk', sector: 'shop', group: 'All in One · 전월 25만원', title: '쇼핑 청구할인', lim: [{ monthCount: 2 }], limKey: 'ibk-aio-shop',
-      where: '네이버플러스스토어, 쿠팡, 무신사, G마켓', rate: 10, value: '10%', type: '청구할인', limit: '쇼핑·배달 통합 월 2회 · 건당 1천원',
+    { id: 'ibk-aio-delivery', card: 'ibk', sector: 'delivery', group: 'All in One · 전월 25만원', title: '배달의민족 청구할인', lim: [{ dayCount: 1, monthCount: 2 }], limKey: 'ibk-aio-shop',
+      where: '배달의민족', kw: '배민', rate: 10, value: '10%', type: '청구할인', limit: '1일 1회 · 쇼핑·배달 통합 월 2회 · 건당 1천원',
       req: { spend: 250000, pooled: true }, calc: { tiers: [[0, 10]], cap: 1000 } },
-    { id: 'ibk-aio-delivery', card: 'ibk', sector: 'delivery', group: 'All in One · 전월 25만원', title: '배달의민족 청구할인', lim: [{ monthCount: 2 }], limKey: 'ibk-aio-shop',
-      where: '배달의민족', kw: '배민', rate: 10, value: '10%', type: '청구할인', limit: '쇼핑·배달 통합 월 2회 · 건당 1천원',
-      req: { spend: 250000, pooled: true }, calc: { tiers: [[0, 10]], cap: 1000 } },
-    { id: 'ibk-aio-digital', ctx: ['공식 앱·홈페이지 국내 자동결제'], card: 'ibk', sector: 'digital', group: 'All in One · 전월 25만원', title: '구독·게임·콘텐츠 청구할인', lim: [{ monthCount: 2 }],
+    { id: 'ibk-aio-digital', ctx: ['공식 앱·홈페이지 국내 자동결제'], card: 'ibk', sector: 'digital', group: 'All in One · 전월 25만원', title: '구독·게임·콘텐츠 청구할인', lim: [{ dayCount: 1, monthCount: 2 }],
       where: '유튜브프리미엄, 넷플릭스, 티빙, 넥슨, 네이버웹툰, 라이엇게임즈, 앱스토어, 플레이스토어',
-      kw: '롤 리그오브레전드', rate: 10, value: '10%', type: '청구할인', limit: '월 2회 · 건당 1천원',
+      kw: '롤 리그오브레전드', rate: 10, value: '10%', type: '청구할인', limit: '1일 1회 · 월 2회 · 건당 1천원',
       req: { spend: 250000, pooled: true }, calc: { tiers: [[0, 10]], cap: 1000 }, notes: ['공식앱·홈페이지 국내 매출 자동결제 건'] },
-    { id: 'ibk-aio-travel', card: 'ibk', sector: 'travel', group: 'All in One · 전월 25만원', title: '여행·레저 청구할인', lim: [{ monthCount: 2 }],
-      where: '야놀자, 쏘카, PC방', kw: 'pc방 피시방', rate: 10, value: '10%', type: '청구할인', limit: '월 2회 · 건당 1천원',
+    { id: 'ibk-aio-travel', card: 'ibk', sector: 'travel', group: 'All in One · 전월 25만원', title: '여행·레저 청구할인', lim: [{ dayCount: 1, monthCount: 2 }],
+      where: '야놀자, 쏘카, PC방', kw: 'pc방 피시방', rate: 10, value: '10%', type: '청구할인', limit: '1일 1회 · 월 2회 · 건당 1천원',
       req: { spend: 250000, pooled: true }, calc: { tiers: [[0, 10]], cap: 1000 } },
-    { id: 'ibk-npay', ctx: ['Npay에 IBK 나라사랑카드를 등록해 결제'], card: 'ibk', sector: 'life', group: 'Npay 포인트 · 전월 25만원', title: 'Npay 포인트 적립', lim: [{ dayCount: 1, monthCount: (s) => ((s.spend.ibk || 0) >= 1000000 ? 10 : (s.spend.ibk || 0) >= 500000 ? 7 : 5) }],
+    { id: 'ibk-npay', ctx: ['Npay에 IBK 나라사랑카드를 등록해 결제'], card: 'ibk', sector: 'life', group: 'Npay 포인트 · 전월 25만원', title: 'Npay 포인트 적립', lim: [{ dayCount: 1, monthCount: (s, t) => (t > NPAY_EXTRA_END ? 5 : (s.spend.ibk || 0) >= 1000000 ? 10 : (s.spend.ibk || 0) >= 500000 ? 7 : 5) }],
       where: '네이버페이(Npay)에 등록해 결제하는 모든 곳', kw: '네이버페이 npay', rate: 10, value: '10%', type: '적립',
-      limit: '1일 1회 · 건당 1천원 · 월 5회 (50만원↑ 7회, 100만원↑ 10회)',
+      limit: '1일 1회 · 건당 1천원 · 월 5회 (2026년까지 50만원↑ 7회, 100만원↑ 10회)',
       req: { spend: 250000 }, calc: { tiers: [[0, 10]], cap: 1000 } },
 
     { id: 'ibk-travel-fee', card: 'ibk', sector: 'travel', group: '트래블 · 실적 무관', title: '해외 이용 수수료 우대',
       where: '해외 가맹점, 해외 ATM', kw: '환전 해외결제', rate: 2, value: '수수료 우대', type: '면제',
-      limit: '미화 결제 시 매매기준율, 해외이용수수료(0.18%) 면제, 해외 ATM 수수료 월 3회 면제' },
-    { id: 'ibk-insurance', need: ['soldier'], card: 'ibk', sector: 'finance', group: '병사특화 · 실적 무관', title: '현역병 상해보험 무료',
+      limit: '미화 결제 시 매매기준율, 국제브랜드 수수료(1%)·해외이용수수료(0.18%) 면제, 해외 ATM 수수료 월 3회 면제' },
+    { id: 'ibk-insurance', ctx: ['가입 기간·갱신 여부는 IBK에 확인'], need: ['ibkSoldier'], card: 'ibk', sector: 'finance', group: '병사특화 · 실적 무관', title: '현역병 상해보험 무료',
       where: '현대해상 단체보험', rate: 0, value: '무료 가입', type: '무료',
       limit: '부대 내 화재·폭발·붕괴 상해 최대 1억원, 부대 외 일반상해 1억원·대중교통 상해 3억원',
       notes: ['문의: 현대해상 02-2097-2911~2918'] },
-    { id: 'ibk-safe-insurance', need: ['soldier'], card: 'ibk', sector: 'finance', group: '현역병 · ~26.12.31', title: '병역생활 안심보험 무료',
+    { id: 'ibk-safe-insurance', need: ['ibkSoldier'], card: 'ibk', sector: 'finance', group: '현역병 · ~26.12.31', title: '병역생활 안심보험 무료',
       where: '현대해상', rate: 0, value: '무료 가입', type: '무료', until: '2026-12-31',
       limit: '특정 전염병, 다중골절, PTSD 진단, 전화금융사기 피해금 70% 등 보장' },
-    { id: 'ibk-funeral', need: ['soldier'], card: 'ibk', sector: 'life', group: '현역병 · ~26.12.31', title: '부모상 장례용품 지원',
+    { id: 'ibk-funeral', need: ['ibkSoldier'], card: 'ibk', sector: 'life', group: '현역병 · ~26.12.31', title: '부모상 장례용품 지원',
       where: '복무 중 부모상', rate: 0, value: '장례용품', type: '무료', until: '2026-12-31',
       notes: ['신청: (주)삼신상사 1611-5056'] },
 
-    { id: 'ibk-naver-membership', need: ['soldier'], card: 'ibk', sector: 'digital', group: 'IBK 급여이체 · ~26.12.31', title: '네이버멤버십 구독료 100%', lim: [{ monthCount: 1 }],
+    { id: 'ibk-naver-membership', need: ['ibkSoldier'], card: 'ibk', sector: 'digital', group: 'IBK 급여이체 · ~26.12.31', title: '네이버멤버십 구독료 100%', lim: [{ monthCount: 1 }],
       where: '네이버플러스 멤버십 구독료', kw: '네이버멤버십', rate: 100, value: '100%', type: '청구할인',
       limit: '월 4,900원', req: { salary: 'ibk' }, until: '2026-12-31', calc: { tiers: [[0, 100]], cap: 4900 } },
-    { id: 'ibk-lounge', need: ['soldier'], card: 'ibk', sector: 'travel', group: 'IBK 급여이체 · ~26.12.31', title: '국내 공항라운지 무료',
+    { id: 'ibk-lounge', need: ['ibkSoldier'], card: 'ibk', sector: 'travel', group: 'IBK 급여이체 · ~26.12.31', title: '국내 공항라운지 무료',
       where: '더 라운지(The Lounge) 제휴 공항라운지', kw: '공항 라운지', rate: 0, value: '무료 이용', type: '무료',
-      limit: '연 1회', req: { salary: 'ibk' }, until: '2026-12-31',
+      limit: '연 1회', lim: [{ yearCount: 1 }], req: { salary: 'ibk' }, until: '2026-12-31',
       notes: ['더 라운지 앱 → 회원가입 → 카드등록 → 이용권 받기', '라운지 데스크에서 이용권+여권/탑승권 제시'] },
     { id: 'ibk-coupon-coupang', need: ['mytag-coupang'], card: 'ibk', sector: 'shop', group: 'IBK 급여이체 · ~26.12.31', title: '쿠팡·다이소·올리브영 쿠폰', lim: [{ monthCount: 1 }],
       where: '쿠팡, 다이소, 올리브영', rate: 10, value: '1천원', type: '쿠폰',
       limit: '1만원 이상 첫 결제 · 월 1회', req: { salary: 'ibk' }, until: '2026-12-31', calc: { fixed: 1000, min: 10000 },
       notes: ['BC카드 "쿠팡·다이소·올리브영" 마이태그 등록 필요'] },
-    { id: 'ibk-coupon-kakaot', need: ['soldier', 'mytag-kakaot'], card: 'ibk', sector: 'taxi', group: '현역병 · ~26.12.31', title: '카카오T 택시 50% 쿠폰', lim: [{ yearCount: 1 }],
+    { id: 'ibk-coupon-kakaot', need: ['ibkSoldier', 'mytag-kakaot'], card: 'ibk', sector: 'taxi', group: '현역병 · ~26.12.31', title: '카카오T 택시 50% 쿠폰', lim: [{ yearCount: 1 }],
       where: '카카오T 택시', rate: 50, value: '50%', type: '쿠폰', limit: '5천원 이상 · 연 1회 · 최대 5천원',
       until: '2026-12-31', calc: { tiers: [[0, 50]], min: 5000, cap: 5000 }, notes: ['BC카드 "카카오T" 마이태그 등록 필요'] },
-    { id: 'ibk-coupon-moms', need: ['soldier', 'mytag-moms'], card: 'ibk', sector: 'food', group: '현역병 · ~26.12.31', title: '맘스터치 1천원 쿠폰',
+    { id: 'ibk-coupon-moms', lim: [{ quarterCount: 1 }], need: ['ibkSoldier', 'mytag-moms'], card: 'ibk', sector: 'food', group: '현역병 · ~26.12.31', title: '맘스터치 1천원 쿠폰',
       where: '맘스터치 오프라인 매장', rate: 10, value: '1천원', type: '쿠폰', limit: '1만원 이상 · 분기 1회',
       until: '2026-12-31', calc: { fixed: 1000, min: 10000 }, notes: ['BC카드 "맘스터치" 마이태그 등록 필요'] },
     { id: 'ibk-mega', ctx: ['메가MGC커피 앱으로 주문'], card: 'ibk', sector: 'cafe', group: '특별제휴 · ~26.12.31', title: '메가MGC커피 앱오더', lim: [{ dayCount: 1 }],
@@ -338,10 +344,10 @@
     { id: 'ibk-genie', card: 'ibk', sector: 'digital', group: '특별제휴 · ~26.12.31', title: '지니뮤직 최대 43%',
       where: '지니뮤직 나라사랑카드 스마트 음악감상', kw: '지니 음악 스트리밍', rate: 43, value: '최대 43%', type: '현장할인',
       limit: '6개월간 정기결제 · 월 8,140→4,620원', until: '2026-12-31' },
-    { id: 'ibk-nol', ctx: ['NOL 앱에서 결제 (간편결제 제외)'], card: 'ibk', sector: 'travel', group: '특별제휴 · ~26.12.31', title: 'NOL(야놀자) 포인트', lim: [{ month: 13000 }],
+    { id: 'ibk-nol', limKey: 'nol-member', ctx: ['NOL 앱에서 결제 (간편결제 제외)'], card: 'ibk', sector: 'travel', group: '특별제휴 · ~26.12.31', title: 'NOL(야놀자) 포인트', lim: [{ month: 13000 }],
       where: 'NOL 숙소(국내·해외)·레저·교통', kw: '야놀자 숙소 모텔 호텔', rate: 5, value: '최대 6천P', type: '적립',
       limit: '2.5만원↑ 1,200P / 5만원↑ 2,500P / 10만원↑ 6,000P · 월 13,000P', until: '2026-12-31',
-      calc: { steps: [[25000, 1200], [50000, 2500], [100000, 6000]] }, notes: ['간편결제 제외'] },
+      calc: { steps: [[25000, 1200], [50000, 2500], [100000, 6000]] }, notes: ['간편결제 제외', '월 13,000P 한도는 1인 기준 — 다른 은행 나라사랑카드 NOL 적립과 합산'] },
     { id: 'ibk-socar', card: 'ibk', sector: 'travel', group: '특별제휴 · ~26.12.31', title: 'SOCAR 50% 쿠폰',
       where: '쏘카 4시간 이상 대여', kw: '쏘카 렌터카 카셰어링', rate: 50, value: '50%', type: '쿠폰', limit: 'i-ONE뱅크 이벤트에서 쿠폰 받기',
       until: '2026-12-31' },
@@ -350,16 +356,11 @@
       limit: '인강 30% · 라이브 20% · 어학원 10%', until: '2026-12-31', notes: ['해커스 인강 사이트 로그인 후 카드 인증'] },
 
     // ───────────────────────── 신한 ─────────────────────────
-    { id: 'shinhan-px', ctx: ['GS25는 군부대 안 해군마트만 (일반 GS25는 편의점 혜택)'], card: 'shinhan', sector: 'px', group: '슈퍼쏠저 · 실적 무관', title: 'PX 캐시백', lim: [{ under: 30000, dayCount: 1 }, { month: 100000 }],
+    { id: 'shinhan-px', ctx: ['GS25는 군부대 안 해군마트만 (일반 GS25는 편의점 혜택)'], card: 'shinhan', sector: 'px', group: '슈퍼쏠저 · 실적 무관', title: 'PX 캐시백 (매월 10일 3만원 미만 50%)', lim: [{ under: 30000, dayCount: 1 }, { month: 100000 }],
       where: '군마트(PX), GS25 해군마트', rate: 20, value: '20%', type: '캐시백',
-      limit: '건당 3만원 미만 일 1회 최대 1천원 · 3만원 이상 한도 없음 · 월 최대 10만원',
-      calc: { tiers: [[0, 20]], capUnder: [30000, 1000] },
+      limit: '20% (매월 10일은 3만원 미만 50%) · 3만원 미만은 일 1회 최대 1천원 · 월 최대 10만원',
+      calc: { tiers: [[0, 20]], capUnder: [30000, 1000], days: { dom: [10], tiers: [[0, 50], [30000, 20]] } },
       notes: ['GS25 해군마트는 한도 초과 시 Life 편의점 20%가 적용'] },
-    { id: 'shinhan-px-10th', card: 'shinhan', sector: 'px', group: '슈퍼쏠저 · 실적 무관', title: 'PX 10일 50% 캐시백',
-      verify: '신한카드 홈페이지 안내 기준 — 받은 상품설명서(2025.11)에는 없어 카드사 확인이 필요해요',
-      where: '군마트(PX) · 매월 10일 · 건당 3만원 미만', rate: 50, value: '50%', type: '캐시백',
-      limit: '매월 10일 · 건당 3만원 미만', calc: { tiers: [[0, 50]], below: 30000, dom: [10] },
-      ctx: ['매월 10일', '건당 3만원 미만'] },
     { id: 'shinhan-welfare', card: 'shinhan', sector: 'welfare', group: '슈퍼쏠저 · 실적 무관', title: '체력단련장·휴양시설 캐시백', lim: [{ month: 20000 }],
       where: '군 체력단련장, 군 휴양시설', kw: '골프 콘도', rate: 20, value: '20%', type: '캐시백', limit: '월 2만원',
       calc: { tiers: [[0, 20]], cap: 20000 }, notes: ['이용 시설은 국군복지포털(welfare.mil.kr)에서 확인'] },
@@ -408,8 +409,14 @@
       where: 'CGV 2D 관람권 (온·오프라인)', rate: 50, value: '6,000원', type: '현장할인', limit: '월 1회 · 동반 1인 (본인 포함 2매)',
       req: { spend: 100000 }, calc: { ticket: { pay: 6000, max: 2 } },
       notes: ['3D·특별관·특별좌석 제외', '팝콘 등 F&B 복합 결제 제외', '결제 금액을 1매 15,000원 기준으로 나눠 매수를 추정해요'] },
-    { id: 'shinhan-park', card: 'shinhan', sector: 'park', group: 'Special · 전월 30만원', title: '테마파크 자유이용권 할인', lim: [{ dayCount: 1, yearCount: 3 }],
-      where: '에버랜드, 롯데월드, 서울랜드 자유이용권', rate: 50, value: '50%', type: '현장할인',
+    { id: 'shinhan-park', card: 'shinhan', sector: 'park', group: 'Special · 전월 30만원', title: '에버랜드 자유이용권 할인', lim: [{ dayCount: 1, yearCount: 3 }],
+      where: '에버랜드 자유이용권', rate: 50, value: '50%', type: '현장할인',
+      limit: '테마파크별 일 1회 · 연 3회 · 본인', req: { spend: 300000 }, calc: { tiers: [[0, 50]] } },
+    { id: 'shinhan-park-lotte', card: 'shinhan', sector: 'park', group: 'Special · 전월 30만원', title: '롯데월드 자유이용권 할인', lim: [{ dayCount: 1, yearCount: 3 }],
+      where: '롯데월드 자유이용권', rate: 50, value: '50%', type: '현장할인',
+      limit: '테마파크별 일 1회 · 연 3회 · 본인', req: { spend: 300000 }, calc: { tiers: [[0, 50]] } },
+    { id: 'shinhan-park-seoul', card: 'shinhan', sector: 'park', group: 'Special · 전월 30만원', title: '서울랜드 자유이용권 할인', lim: [{ dayCount: 1, yearCount: 3 }],
+      where: '서울랜드 자유이용권', rate: 50, value: '50%', type: '현장할인',
       limit: '테마파크별 일 1회 · 연 3회 · 본인', req: { spend: 300000 }, calc: { tiers: [[0, 50]] } },
     { id: 'shinhan-caribbean', ctx: ['본인 입장권'], card: 'shinhan', sector: 'park', group: 'Special · 전월 30만원', title: '캐리비안베이 할인', lim: [{ dayCount: 1, yearCount: 3 }],
       where: '캐리비안베이 입장권', rate: 30, value: '30%', type: '현장할인',
@@ -417,10 +424,10 @@
     { id: 'shinhan-overseas', card: 'shinhan', sector: 'travel', group: 'Special · 실적 무관', title: '해외이용 캐시백',
       where: '해외 가맹점 (VISA 해외겸용 카드)', kw: '해외결제', rate: 1, value: '1%', type: '캐시백',
       calc: { tiers: [[0, 1]] }, notes: ['해외 현금인출 제외', '해외 사이트가 국내 PG로 결제되면 제외'] },
-    { id: 'shinhan-cu', ctx: ['CU 행사상품만, 신한카드 단독 결제'], card: 'shinhan', sector: 'store', group: 'Special · 실적 무관', title: 'CU 행사상품 즉시할인', lim: [{ month: 5000 }],
+    { id: 'shinhan-cu', extra: 'shinhan-store', extraAfter: true, ctx: ['CU 행사상품만, 신한카드 단독 결제'], card: 'shinhan', sector: 'store', group: 'Special · 실적 무관', title: 'CU 행사상품 즉시할인', lim: [{ month: 5000 }],
       where: 'CU 행사상품 (오프라인·포켓CU)', kw: '씨유', rate: 10, value: '10%', type: '현장할인', limit: '월 5천원',
-      calc: { tiers: [[0, 10]] }, notes: ['편의점 20% 캐시백과 중복 가능', '휴게소·공항·병원 입점 매장 제외'] },
-    { id: 'shinhan-lg', card: 'shinhan', sector: 'life', group: 'Multi Membership', title: 'LG전자 1% 포인트',
+      calc: { tiers: [[0, 10]] }, notes: ['즉시할인 후 남은 금액에 편의점 20% 캐시백이 추가로 적용돼요 (예: 5천원 → 500원 할인 + 900원 캐시백)', '휴게소·공항·병원 입점 매장 제외'] },
+    { id: 'shinhan-lg', lim: [{ year: 100000 }], card: 'shinhan', sector: 'life', group: 'Multi Membership', title: 'LG전자 1% 포인트',
       where: 'LG전자 온·오프라인몰', kw: '가전 엘지', rate: 1, value: '1%', type: '적립', limit: '연 10만 포인트',
       calc: { tiers: [[0, 1]] } },
     { id: 'shinhan-membership', card: 'shinhan', sector: 'life', group: 'Multi Membership', title: '멤버십 자동 탑재',
@@ -451,8 +458,8 @@
     { id: 'kb-bus', card: 'kb', sector: 'train', group: '꿈꾸고 즐기는 · 통합한도', title: '고속·시외버스 할인', lim: [{ month: 10000 }], limKey: 'kb-transit',
       where: '고속버스, 시외버스', rate: 20, value: '20%', type: '환급할인', limit: '대중교통과 합산 월 5만원 이용분까지',
       req: { spend: 100000, pooled: true }, calc: { tiers: [[0, 20]] } },
-    { id: 'kb-cgv', ctx: ['CGV 홈페이지·앱 결제'], card: 'kb', sector: 'movie', group: '꿈꾸고 즐기는 · 통합한도', title: 'CGV 35% 환급할인',
-      where: 'CGV 홈페이지·앱 결제', rate: 35, value: '35%', type: '환급할인', limit: '1만원 이상 시 건당 2만원까지 (최대 7천원)',
+    { id: 'kb-cgv', card: 'kb', sector: 'movie', group: '꿈꾸고 즐기는 · 통합한도', title: 'CGV 35% 환급할인',
+      where: 'CGV (현장·온라인)', rate: 35, value: '35%', type: '환급할인', limit: '1만원 이상 시 건당 2만원까지 (최대 7천원)',
       req: { spend: 100000, pooled: true }, calc: { tiers: [[0, 35]], min: 10000, upto: 20000 }, notes: ['상품권 구매, 매점 이용 제외'] },
     { id: 'kb-starbucks', ctx: ['백화점·마트 입점 매장 제외'], card: 'kb', sector: 'cafe', group: '꿈꾸고 즐기는 · 통합한도', title: '스타벅스 20% 환급할인',
       where: '스타벅스', rate: 20, value: '20%', type: '환급할인', limit: '1만원 이상 시 건당 2만원까지 (최대 4천원)',
@@ -573,7 +580,8 @@
     "kb:꿈꾸고 즐기는:교보문고 5% 환급할인": "kb-kyobo",
     "kb:꿈꾸고 즐기는:어학시험 2천원 환급": "kb-lang",
     "kb:꿈꾸고 즐기는:통신요금 자동이체": "kb-telecom",
-    "kb:꿈꾸고 즐기는:쇼핑 5% 환급할인": "kb-shop"
+    "kb:꿈꾸고 즐기는:쇼핑 5% 환급할인": "kb-shop",
+    "shinhan-px-10th": "shinhan-px"
   };
 
   window.DATA = { BANKS, CARDS, SECTORS, BENEFITS: B, LEGACY_IDS, UPDATED: '2026-10' };
