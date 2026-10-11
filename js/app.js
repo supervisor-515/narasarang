@@ -8,7 +8,7 @@
     [null, '모름'], [0, '8만원 미만'], [80000, '8만원 이상'], [100000, '10만원 이상'], [200000, '20만원 이상'],
     [250000, '25만원 이상'], [300000, '30만원 이상'], [500000, '50만원 이상'], [700000, '70만원 이상'], [1000000, '100만원 이상'],
   ];
-  const QUICK = ['PX', '편의점', '스타벅스', '택시', '배달의민족', 'KTX', 'CGV', '지하철', '놀이공원', '넷플릭스', '쿠팡', '아웃백'];
+  const QUICK = ['편의점', '스타벅스', '택시', '배달의민족', 'KTX', 'CGV', '지하철', '놀이공원', '넷플릭스', '쿠팡', '아웃백'];
 
   // ───────── 저장소 ─────────
   // 쓰기 후 다시 읽어 실제로 저장됐는지 확인
@@ -204,7 +204,7 @@
       <div class="search-wrap">
         <label class="search ${ui.q ? 'has-value' : ''}">
           <span aria-hidden="true">🔍</span>
-          <input id="q" type="search" enterkeyhint="search" autocomplete="off" aria-label="가맹점 검색" placeholder="어디서 결제하나요? (예: 스타벅스, PX)" value="${esc(ui.q)}">
+          <input id="q" type="search" enterkeyhint="search" autocomplete="off" aria-label="가맹점 검색" placeholder="${ui.tab === 'home' && !ui.q ? '다른 곳 검색 (스타벅스, 편의점…)' : '어디서 결제하나요? (예: 스타벅스, PX)'}" value="${esc(ui.q)}">
           <button class="clear" id="clear" type="button" aria-label="검색어 지우기">✕</button>
         </label>
       </div>`;
@@ -240,12 +240,15 @@
       html += `<div id="results">${resultsHTML(rows)}</div>`;
       return html;
     }
+    // 기본 화면 = PX (가장 자주 쓰는 곳): 금액만 넣으면 바로 카드 추천
     const salary = S.salary ? BANK[S.salary].name : '미설정';
     html += `
-      <div class="hello">
-        <h1>결제하기 전에<br>혜택부터 확인해요</h1>
-        <p>${S.cards.length ? `내 카드 ${S.cards.map((id) => CARD[id].short).join('·')} · 급여 ${esc(salary)}` : '설정에서 내 카드를 고르면 맞춤으로 보여드려요'}</p>
+      <div class="px-home">
+        <div class="px-title"><span aria-hidden="true">🪖</span> PX에서 결제할 때</div>
+        <p class="px-sub">${S.cards.length ? `내 카드 ${S.cards.map((id) => CARD[id].short).join('·')} · 급여 ${esc(salary)}` : '설정에서 내 카드를 고르면 맞춤으로 보여드려요'}</p>
       </div>`;
+    html += amountCard('PX에서');
+    html += `<div id="results">${pxResults()}</div>`;
     if (!S.cards.length) {
       html += `<div class="section cta"><div><b>내 나라사랑카드를 골라주세요</b><div class="muted">지금은 4개 카드 혜택을 모두 보여줘요</div></div><button data-go="settings">설정</button></div>`;
     }
@@ -253,7 +256,7 @@
     if (stale.length) {
       html += `<div class="section cta"><div><b>달이 바뀌었어요</b><div class="muted">${stale.map((id) => CARD[id].short).join('·')} 지난달 사용액을 다시 입력해주세요</div></div><button data-go="settings">입력</button></div>`;
     }
-    html += `<div class="chips-label">자주 가는 곳 <span>누르면 바로 금액 입력</span></div>`;
+    html += `<div class="chips-label">다른 곳에서 결제할 때 <span>누르면 바로 금액 입력</span></div>`;
     html += `<div class="chips" style="margin:0 -16px 8px">${QUICK.map((k) => `<button class="chip" data-q="${esc(k)}">${esc(k)}</button>`).join('')}</div>`;
 
     html += `<div class="section"><h2>섹터별 혜택 <small>받을 수 있는 혜택 수</small></h2><div class="grid">`;
@@ -273,6 +276,12 @@
       html += `<div class="section cta"><div><b>확인이 필요한 혜택 ${pending.length}개</b><div class="muted">사용액·현역병 여부 등을 입력하면 정확히 알려드려요</div></div><button data-go="settings">입력</button></div>`;
     }
     return html;
+  }
+
+  function pxResults() {
+    const rows = ranked(BENEFITS.filter((b) => b.sector === 'px'));
+    const shown = rows.filter((r) => r.e.status !== 'none');
+    return best(rows, 'PX') + list(shown, `PX 혜택 ${shown.length}개 <small>${ui.amount ? '할인 큰 순' : '좋은 순'}</small>`);
   }
 
   function resultsHTML(rows) {
@@ -538,7 +547,12 @@
   function refreshResults() {
     const res = $('#results');
     if (ui.tab === 'home') {
-      if (!ui.q.trim() || !res) { render(true); focusEnd('#q'); return; }
+      const pxHome = !!$('.px-home');
+      if (!ui.q.trim()) {
+        if (pxHome && res) { res.innerHTML = pxResults(); return; }
+        render(true); focusEnd('#q'); return;
+      }
+      if (pxHome || !res) { render(true); focusEnd('#q'); return; }
       const rows = ranked(E.search(ui.q));
       const slot = $('.amt-slot');
       slot.hidden = !rows.length;

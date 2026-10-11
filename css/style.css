@@ -333,3 +333,8 @@ input[type="search"]::-webkit-search-cancel-button { -webkit-appearance: none; d
 .stepper button { width: 36px; height: 36px; border-radius: 10px; background: var(--surface-2); font-size: 20px; color: var(--text-2); }
 .stepper b { min-width: 36px; text-align: center; }
 .confirm.ghost { background: var(--surface-2); color: var(--accent); }
+
+/* ── 홈: PX 우선 ── */
+.px-home { padding: 6px 4px 10px; }
+.px-title { font-size: 22px; font-weight: 800; letter-spacing: -0.03em; }
+.px-sub { margin: 4px 0 0; color: var(--text-3); font-size: 13.5px; }
