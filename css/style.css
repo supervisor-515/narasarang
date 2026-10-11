@@ -252,4 +252,23 @@ select.sel {
 .tab.on { color: var(--text); }
 .tab.on .tab-ico { filter: none; opacity: 1; }
 
-.toast { position: fixed; left: 50%; bottom: calc(var(--tabbar-h) + env(safe-area-inset-bottom) + 16px); transform: translateX(-50%); background: rgba(25,31,40,.92); color: #fff; padding: 10px 16px; border-radius: 12px; font-size: 14px; z-index: 20; }
+.toast { position: fixed; left: 50%; width: max-content; max-width: calc(100% - 48px); text-align: center; bottom: calc(var(--tabbar-h) + env(safe-area-inset-bottom) + 16px); transform: translateX(-50%); background: rgba(25,31,40,.92); color: #fff; padding: 10px 16px; border-radius: 12px; font-size: 14px; z-index: 20; }
+
+/* ── 결제 확정 & 기록 ── */
+.pill.used { background: var(--accent-soft); color: var(--accent); }
+.confirm {
+  display: block; width: calc(100% - 52px); margin: 10px 0 0 52px; height: 42px; border-radius: 12px;
+  background: var(--accent); color: #fff; font-weight: 700; font-size: 14px;
+}
+.confirm:active, .best-confirm:active { transform: scale(.98); }
+.best-confirm {
+  margin-top: 14px; width: 100%; height: 46px; border-radius: 14px;
+  background: rgba(255,255,255,.95); color: #191F28; font-weight: 700; font-size: 15px;
+}
+.saved { font-size: 30px; font-weight: 800; letter-spacing: -0.03em; color: var(--ok); }
+.meter { height: 8px; border-radius: 4px; background: var(--line); overflow: hidden; margin: 2px 0 6px; }
+.meter div { height: 100%; background: var(--accent); border-radius: 4px; }
+.led { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 0; border-top: 1px solid var(--line); }
+.led b { font-weight: 600; font-size: 14.5px; }
+.led-v { display: flex; align-items: center; gap: 10px; font-weight: 700; color: var(--ok); white-space: nowrap; }
+.led-v button { width: 26px; height: 26px; border-radius: 50%; background: var(--surface-2); color: var(--text-3); font-size: 12px; }

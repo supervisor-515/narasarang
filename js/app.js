@@ -23,7 +23,21 @@
   }
   let S = load();
 
+  // 결제 기록: 확정한 결제를 쌓아 월·일 한도와 횟수를 차감
+  const LEDGER_KEY = 'narasarang.ledger.v1';
+  function loadLedger() {
+    try {
+      const cut = Date.now() - 400 * 864e5; // 연 횟수 계산용으로 13개월치만 보관
+      return (JSON.parse(localStorage.getItem(LEDGER_KEY) || '[]') || []).filter((e) => e && e.ts > cut);
+    } catch (e) { return []; }
+  }
+  function saveLedger() {
+    try { localStorage.setItem(LEDGER_KEY, JSON.stringify(LEDGER)); } catch (e) { /* 저장 불가 환경 */ }
+  }
+  let LEDGER = loadLedger();
+
   const ui = { tab: S.onboarded ? 'home' : 'settings', q: '', amount: 0, sector: 'px', card: null, open: new Set() };
+  const BENEFIT = Object.fromEntries(BENEFITS.map((b) => [b.id, b]));
 
   // ───────── 유틸 ─────────
   const $ = (sel, el = document) => el.querySelector(sel);
@@ -34,9 +48,64 @@
   const cardVars = (c) => `--c1:${c.color};--c2:${c.color2};--ct:${c.text}`;
   const owned = (id) => S.cards.includes(id);
   const visibleCards = () => (S.showAll || S.cards.length === 0 ? CARDS.map((c) => c.id) : S.cards);
+  const resolve = (v) => (typeof v === 'function' ? v(S) : v);
+  const pad = (n) => String(n).padStart(2, '0');
+  const ymd = (t) => { const d = new Date(t); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
+  const thisMonth = () => ymd(Date.now()).slice(0, 7);
+  const monthEntries = () => { const m = thisMonth(); return LEDGER.filter((e) => ymd(e.ts).startsWith(m)); };
+
+  // ───────── 한도 차감 ─────────
+  const inBand = (r, amt) => !(r.under && !(amt < r.under)) && !(r.over && !(amt >= r.over));
+
+  function usage(key, rule) {
+    const today = ymd(Date.now());
+    const u = { mSum: 0, mCnt: 0, dSum: 0, dCnt: 0, yCnt: 0 };
+    const year = today.slice(0, 4);
+    const month = today.slice(0, 7);
+    LEDGER.forEach((e) => {
+      if (e.k !== key || (rule && !inBand(rule, e.amt))) return;
+      const d = ymd(e.ts);
+      if (d.startsWith(year)) u.yCnt++;
+      if (d.startsWith(month)) { u.mSum += e.v; u.mCnt++; }
+      if (d === today) { u.dSum += e.v; u.dCnt++; }
+    });
+    return u;
+  }
+
+  function pooledUsed(cardId) {
+    return monthEntries().filter((e) => e.card === cardId && e.pooled).reduce((a, e) => a + e.v, 0);
+  }
+
+  // amt가 null이면 금액 구간과 무관한 한도만 확인
+  function remaining(b, amt) {
+    let rem = Infinity;
+    let why = '';
+    const key = b.limKey || b.id;
+    (b.lim || []).forEach((r) => {
+      const banded = r.under || r.over;
+      if (banded && (amt == null || !inBand(r, amt))) return;
+      const u = usage(key, banded ? r : null);
+      const m = resolve(r.month); const d = resolve(r.day);
+      const mc = resolve(r.monthCount); const dc = resolve(r.dayCount); const yc = resolve(r.yearCount);
+      const band = r.under ? `${man(r.under)} 미만 ` : r.over ? `${man(r.over)} 이상 ` : '';
+      if (m != null && m - u.mSum < rem) { rem = Math.max(0, m - u.mSum); if (!rem) why = `${band}이번 달 한도 소진`; }
+      if (d != null && d - u.dSum < rem) { rem = Math.max(0, d - u.dSum); if (!rem) why = `${band}오늘 한도 소진`; }
+      if (mc != null && u.mCnt >= mc) { rem = 0; why = `${band}이번 달 ${mc}회 모두 사용`; }
+      if (dc != null && u.dCnt >= dc) { rem = 0; why = `${band}오늘 ${dc}회 모두 사용`; }
+      if (yc != null && u.yCnt >= yc) { rem = 0; why = `${band}올해 ${yc}회 모두 사용`; }
+    });
+    if (b.req && b.req.pooled) {
+      const lim = tierLimit(CARD[b.card], S.spend[b.card]);
+      if (lim != null && lim - pooledUsed(b.card) < rem) {
+        rem = Math.max(0, lim - pooledUsed(b.card));
+        if (!rem) why = '통합한도 소진';
+      }
+    }
+    return { rem, why };
+  }
 
   // ───────── 조건 판정 ─────────
-  function evaluate(b) {
+  function evaluate(b, amt = ui.amount || null) {
     const r = b.req || {};
     const why = [];
     let status = 'ok';
@@ -65,6 +134,10 @@
     if (!owned(b.card) && S.cards.length) {
       return { status: 'none', why: ['미보유 카드'] };
     }
+    if (status !== 'no' && (b.lim || (b.req && b.req.pooled))) {
+      const left = remaining(b, amt);
+      if (left.rem === 0 && status !== 'no') { status = 'no'; why.unshift(left.why); }
+    }
     return { status, why };
   }
 
@@ -75,16 +148,26 @@
     if (c.steps) {
       let v = 0;
       c.steps.forEach(([m, p]) => { if (amt >= m) v = p; });
-      return { v, note: v ? 'P 적립' : `${man(c.steps[0][0])} 이상 시` };
+      return limitBy(b, amt, { v, note: v ? 'P 적립' : `${man(c.steps[0][0])} 이상 시` });
     }
-    if (c.fixed) return { v: c.fixed };
+    if (c.fixed) return limitBy(b, amt, { v: c.fixed });
     let rate = 0;
     (c.tiers || []).forEach(([m, p]) => { if (amt >= m) rate = p; });
     const base = c.upto ? Math.min(amt, c.upto) : amt;
     let v = (base * rate) / 100;
     if (c.cap) v = Math.min(v, c.cap);
     if (c.capUnder && amt < c.capUnder[0]) v = Math.min(v, c.capUnder[1]);
-    return { v, rate };
+    return limitBy(b, amt, { v: Math.floor(v), rate });
+  }
+
+  function limitBy(b, amt, x) {
+    const left = remaining(b, amt);
+    if (left.rem < x.v) {
+      x.v = left.rem;
+      x.note = left.rem ? '남은 한도까지만' : left.why;
+      x.partial = true;
+    }
+    return x;
   }
 
   function tierLimit(card, spend) {
@@ -136,6 +219,8 @@
         : `<b>${esc(b.value)}</b><i>${esc(x.note || b.type)}</i>`;
     }
     const personal = b.personal ? b.personal(S) : '';
+    const used = usage(b.limKey || b.id, null);
+    const canConfirm = x && x.v > 0 && ui.amount && (e.status === 'ok' || e.status === 'check');
     const extra = e.why.filter((w) => w.includes('면제')).map((w) => `<span class="pill ok">${esc(w)}</span>`).join('');
     return `
       <div role="button" tabindex="0" class="item ${e.status === 'none' || e.status === 'no' ? 'dim' : ''} ${open ? 'open' : ''}" data-id="${b.id}">
@@ -151,7 +236,9 @@
           ${statusPill(e)}${extra}
           ${b.until ? `<span class="pill until">~${esc(b.until.slice(2).replace(/-/g, '.'))}</span>` : ''}
           ${b.req && b.req.pooled ? '<span class="pill tag">통합한도</span>' : ''}
+          ${used.mCnt ? `<span class="pill used">이번 달 ${used.mSum ? won(used.mSum) + ' · ' : ''}${used.mCnt}회</span>` : ''}
         </div>
+        ${canConfirm ? confirmBtn(b, x) : ''}
         <div class="detail">
           <p><b>${esc(c.name)}</b> · ${esc(b.group)}</p>
           ${b.limit ? `<p>한도 · ${esc(b.limit)}</p>` : ''}
@@ -161,14 +248,22 @@
       </div>`;
   }
 
+  function confirmBtn(b, x) {
+    const amtTxt = b.calc.steps ? x.v.toLocaleString('ko-KR') + 'P' : won(x.v);
+    return `<button class="confirm" data-confirm="${esc(b.id)}">${esc(won(ui.amount))} 결제 확정 · ${esc(amtTxt)} 기록</button>`;
+  }
+
   function list(rows, head) {
     if (!rows.length) return '';
     return `<div class="list">${head ? `<div class="list-head">${head}</div>` : ''}${rows.map(item).join('')}</div>`;
   }
 
   function best(rows, label) {
-    const top = rows.find((r) => r.e.status === 'ok');
-    if (!top) return '';
+    const top = rows.find((r) => r.e.status === 'ok' && (!ui.amount || !r.x || r.x.v > 0));
+    if (!top) {
+      const spent = rows.filter((r) => r.e.why && /소진|모두 사용/.test(r.e.why[0] || ''));
+      return spent.length ? `<div class="section"><b>쓸 수 있는 한도를 다 썼어요</b>${spent.map((r) => `<div class="muted">${esc(CARD[r.b.card].short + ' ' + r.b.title)} · ${esc(r.e.why[0])}</div>`).join('')}</div>` : '';
+    }
     const c = CARD[top.b.card];
     const v = top.x && top.x.v > 0 ? (top.b.calc.steps ? top.x.v.toLocaleString('ko-KR') + 'P 적립' : won(top.x.v) + ' 아껴요') : top.b.value;
     return `
@@ -177,6 +272,8 @@
         <div class="t">${esc(c.name)}로 결제하세요</div>
         <div class="v">${esc(v)}</div>
         <div class="s">${esc(top.b.title)}${top.b.limit ? ' · ' + esc(top.b.limit) : ''}</div>
+        ${top.x && top.x.partial && top.x.v > 0 ? '<div class="s">⚠️ 남은 한도까지만 적용돼요</div>' : ''}
+        ${top.x && top.x.v > 0 && ui.amount ? `<button class="best-confirm" data-confirm="${esc(top.b.id)}">이 카드로 결제 확정</button>` : ''}
       </div>`;
   }
 
@@ -222,6 +319,8 @@
     });
     html += `</div></div>`;
 
+    html += monthSummary();
+
     const ending = ranked(BENEFITS.filter((b) => b.until)).filter((r) => r.e.status !== 'none').slice(0, 4);
     if (ending.length) html += list(ending, `기간 한정 혜택 <small>~${ending[0].b.until.replace(/-/g, '.')}</small>`);
 
@@ -238,6 +337,41 @@
     }
     const okN = rows.filter((r) => r.e.status === 'ok').length;
     return best(rows, `‘${ui.q.trim()}’에서`) + list(rows, `검색 결과 ${rows.length}개 <small>받을 수 있는 혜택 ${okN}개</small>`);
+  }
+
+  function monthSummary() {
+    const es = monthEntries();
+    if (!es.length) return '';
+    const total = es.reduce((a, e) => a + e.v, 0);
+    const byCard = CARDS.map((c) => [c, es.filter((e) => e.card === c.id).reduce((a, e) => a + e.v, 0)]).filter(([, v]) => v);
+    return `<div class="section"><h2>이번 달 받은 혜택 <small>${es.length}건 기록</small></h2>
+      <div class="saved">${won(total)}</div>
+      <div class="opts" style="margin-top:10px">${byCard.map(([c, v]) => `<button class="opt" data-card="${c.id}" data-goto="cards">${esc(c.short)} ${won(v)}</button>`).join('')}</div>
+    </div>`;
+  }
+
+  function ledgerSection(c) {
+    const es = monthEntries().filter((e) => e.card === c.id).sort((a, b) => b.ts - a.ts);
+    const lim = tierLimit(c, S.spend[c.id]);
+    const pooled = pooledUsed(c.id);
+    const total = es.reduce((a, e) => a + e.v, 0);
+    let html = `<div class="section"><h2>이번 달 기록 <small>${thisMonth().replace('-', '.')}</small></h2>
+      <div class="kv"><span>받은 혜택 합계</span><b>${won(total)}</b></div>`;
+    if (lim) {
+      const pct = Math.min(100, Math.round((pooled / lim) * 100));
+      html += `<div class="kv"><span>통합한도 사용</span><b>${won(pooled)} / ${won(lim)}</b></div>
+        <div class="meter"><div style="width:${pct}%"></div></div>`;
+    }
+    if (!es.length) {
+      html += `<p class="hint">검색 화면에서 결제 금액을 넣고 ‘결제 확정’을 누르면 여기 쌓여요. 한도를 다 쓰면 다른 카드를 추천해드려요.</p>`;
+    }
+    es.forEach((e) => {
+      const b = BENEFIT[e.b];
+      const d = new Date(e.ts);
+      html += `<div class="led"><div><b>${esc(b ? b.title : e.title)}</b><div class="muted">${d.getMonth() + 1}.${d.getDate()} · ${won(e.amt)} 결제</div></div>
+        <div class="led-v">−${won(e.v)}<button data-del="${e.id}" aria-label="기록 삭제">✕</button></div></div>`;
+    });
+    return html + '</div>';
   }
 
   // ───────── 화면: 섹터 ─────────
@@ -269,6 +403,7 @@
         <div class="chip-ic"></div>
         <div class="nm">${esc(c.name)}</div>
       </div>`;
+    html += ledgerSection(c);
     html += `
       <div class="section">
         <div class="kv"><span>지난달 사용액</span>
@@ -283,7 +418,8 @@
         <p class="hint">실적 제외: ${esc(c.excluded)}</p>
       </div>`;
 
-    const rows = BENEFITS.filter((b) => b.card === c.id).map((b) => ({ b, e: evaluate(b), x: null }));
+
+    const rows = BENEFITS.filter((b) => b.card === c.id).map((b) => ({ b, e: evaluate(b, null), x: null }));
     const groups = [];
     rows.forEach((r) => {
       let g = groups.find((x) => x.name === r.b.group);
@@ -378,10 +514,33 @@
 
   function go(tab) { ui.tab = tab; render(); }
 
+  function confirmPay(id) {
+    const b = BENEFIT[id];
+    const x = b && estimate(b, ui.amount);
+    if (!x || !(x.v > 0)) return;
+    const c = CARD[b.card];
+    LEDGER.push({
+      id: Date.now(), ts: Date.now(), b: b.id, k: b.limKey || b.id, card: b.card,
+      title: b.title, amt: ui.amount, v: x.v, pooled: !!(b.req && b.req.pooled),
+    });
+    saveLedger();
+    const left = remaining(b, ui.amount);
+    ui.amount = 0;
+    render(true);
+    toast(`${c.short} ${won(x.v)} 혜택 기록${left.rem === 0 ? ` · ${left.why}` : isFinite(left.rem) ? ` · 남은 한도 ${won(left.rem)}` : ''}`);
+  }
+
   document.addEventListener('click', (ev) => {
     const t = ev.target.closest('button, [data-id]');
     if (!t) return;
     const d = t.dataset;
+    if (d.confirm) { confirmPay(d.confirm); return; }
+    if (d.del) {
+      const e = LEDGER.find((x) => String(x.id) === d.del);
+      if (e && confirm(`${won(e.amt)} 결제 기록을 지울까요?`)) { LEDGER = LEDGER.filter((x) => x !== e); saveLedger(); render(true); }
+      return;
+    }
+    if (d.goto) { ui.card = d.card; go(d.goto); return; }
     if (d.tab) { if (d.tab === ui.tab && ui.tab === 'home') { ui.q = ''; } go(d.tab); return; }
     if (d.go) { go(d.go); return; }
     if (d.q) { ui.q = d.q; render(); return; }
