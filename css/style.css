@@ -93,14 +93,6 @@ button { cursor: pointer; border: 0; background: none; padding: 0; }
 .search input::placeholder { color: var(--text-3); }
 .search .clear { width: 24px; height: 24px; border-radius: 50%; background: var(--line); color: var(--text-2); font-size: 13px; display: none; }
 .search.has-value .clear { display: inline-flex; align-items: center; justify-content: center; }
-.amount {
-  margin-top: 8px; display: flex; align-items: center; gap: 8px;
-  background: var(--surface); border-radius: 14px; padding: 0 14px; height: 44px; border: 1.5px solid transparent;
-}
-.amount:focus-within { border-color: var(--accent); }
-.amount label { color: var(--text-3); font-size: 14px; white-space: nowrap; }
-.amount input { flex: 1; border: 0; outline: 0; background: transparent; text-align: right; font-size: 16px; font-weight: 600; min-width: 0; }
-.amount span { color: var(--text-2); font-size: 14px; }
 
 .chips { display: flex; gap: 8px; overflow-x: auto; padding: 4px 2px 2px; scrollbar-width: none; margin: 0 -16px; padding-left: 16px; padding-right: 16px; }
 .chips::-webkit-scrollbar { display: none; }
@@ -272,3 +264,35 @@ select.sel {
 .led b { font-weight: 600; font-size: 14.5px; }
 .led-v { display: flex; align-items: center; gap: 10px; font-weight: 700; color: var(--ok); white-space: nowrap; }
 .led-v button { width: 26px; height: 26px; border-radius: 50%; background: var(--surface-2); color: var(--text-3); font-size: 12px; }
+
+/* ── 금액 입력 카드 ── */
+.amt-card { background: var(--surface); border-radius: var(--radius); padding: 18px 20px 16px; margin: 4px 0 12px; box-shadow: var(--shadow); border: 2px solid transparent; transition: border-color .15s; }
+.amt-card:focus-within { border-color: var(--accent); }
+.amt-card[hidden] { display: none; }
+.amt-label { display: block; font-size: 14px; color: var(--text-3); font-weight: 600; }
+.amt-field { display: flex; align-items: baseline; gap: 4px; margin-top: 6px; }
+.amt-field { position: relative; flex-wrap: nowrap; }
+.amt-field input, .amt-measure {
+  font-size: 34px; font-weight: 800; letter-spacing: -0.03em; font-family: inherit;
+}
+.amt-measure { position: absolute; visibility: hidden; white-space: pre; left: 0; top: 0; pointer-events: none; }
+.amt-field input {
+  flex: none; max-width: calc(100% - 40px); min-width: 0; border: 0; outline: 0; background: transparent; padding: 0;
+  font-size: 34px; font-weight: 800; letter-spacing: -0.03em; color: var(--text); caret-color: var(--accent);
+}
+.amt-field input::placeholder { color: var(--line); font-weight: 700; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .amt-field input::placeholder { color: var(--text-3); opacity: .5; } }
+.amt-won { font-size: 26px; font-weight: 700; color: var(--text); }
+.amt-won.off { color: var(--line); }
+.amt-add { display: flex; gap: 6px; margin-top: 14px; overflow-x: auto; scrollbar-width: none; }
+.amt-add::-webkit-scrollbar { display: none; }
+.amt-add button {
+  flex: 1 0 auto; height: 38px; padding: 0 12px; border-radius: 10px;
+  background: var(--surface-2); color: var(--text-2); font-size: 14px; font-weight: 600;
+}
+.amt-add button:active { background: var(--accent-soft); color: var(--accent); }
+.amt-add .reset { flex: 0 0 auto; color: var(--text-3); font-weight: 500; }
+
+input[type="search"]::-webkit-search-cancel-button { -webkit-appearance: none; display: none; }
+.chips-label { font-size: 14px; font-weight: 700; margin: 0 4px 8px; }
+.chips-label span { font-weight: 500; color: var(--text-3); font-size: 12.5px; margin-left: 6px; }

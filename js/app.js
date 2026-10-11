@@ -197,14 +197,27 @@
         || (q.b.rate - p.b.rate));
   }
 
+  // 줄임말 → 가맹점 이름
+  const ALIAS = {
+    스벅: '스타벅스', 맥날: '맥도날드', 롯리: '롯데리아', 배민: '배달의민족', 넷플: '넷플릭스', 유튭: '유튜브',
+    피엑스: 'px', 씨유: 'cu', 지에스: 'gs25', 이마트: '이마트24', 메가: '메가', 빕스: 'vips', 올영: '올리브영',
+    카택: '카카오t', 카카오택시: '카카오t', 롯월: '롯데월드', 에버: '에버랜드', 무쿠: '무신사', 지마켓: 'g마켓', 쿠팡이츠: '쿠팡이츠',
+  };
+
+  // 가맹점·혜택 이름이 맞는 결과를 우선, 없으면 업종(섹터)으로 넓혀서 찾기
   function search(q) {
-    const tokens = q.trim().split(/\s+/).map(norm).filter(Boolean);
+    const tokens = q.trim().split(/\s+/).map(norm).filter(Boolean).map((t) => norm(ALIAS[t] || t));
     if (!tokens.length) return [];
-    return BENEFITS.filter((b) => {
+    const strong = [];
+    const weak = [];
+    BENEFITS.forEach((b) => {
       const sec = SECTOR[b.sector];
-      const hay = norm([b.title, b.where, b.kw, sec.name, sec.kw, CARD[b.card].short, CARD[b.card].name, b.group].join(' '));
-      return tokens.every((t) => hay.includes(t));
+      const own = norm([b.title, b.where, b.kw, CARD[b.card].short, CARD[b.card].name, b.group].join(' '));
+      const all = own + norm(sec.name + sec.kw);
+      if (tokens.every((t) => own.includes(t))) strong.push(b);
+      else if (tokens.every((t) => all.includes(t))) weak.push(b);
     });
+    return strong.length ? strong : weak;
   }
 
   // ───────── 렌더링 조각 ─────────
@@ -254,6 +267,7 @@
           ${b.limit ? `<p>한도 · ${esc(b.limit)}</p>` : ''}
           ${personal ? `<p class="me">${esc(personal)}</p>` : ''}
           ${b.notes && b.notes.length ? `<ul>${b.notes.map((n) => `<li>${esc(n)}</li>`).join('')}</ul>` : ''}
+          ${!ui.amount && b.calc && !b.addon && ui.tab !== 'cards' ? '<p class="me">위에 결제 금액을 넣으면 할인액 계산과 결제 확정을 할 수 있어요</p>' : ''}
         </div>
       </div>`;
   }
@@ -295,10 +309,22 @@
           <input id="q" type="search" enterkeyhint="search" autocomplete="off" placeholder="어디서 결제하나요? (예: 스타벅스, PX)" value="${esc(ui.q)}">
           <button class="clear" id="clear" type="button" aria-label="지우기">✕</button>
         </label>
-        <div class="amount">
-          <label for="amt">결제 금액</label>
-          <input id="amt" inputmode="numeric" placeholder="선택 입력" value="${ui.amount ? ui.amount.toLocaleString('ko-KR') : ''}">
-          <span>원</span>
+      </div>`;
+  }
+
+  // 토스 송금처럼 큰 숫자 + 빠른 금액 버튼
+  function amountCard(where) {
+    return `
+      <div class="amt-card">
+        <label for="amt" class="amt-label">${esc(where)} 얼마 결제하나요?</label>
+        <div class="amt-field">
+          <input id="amt" inputmode="numeric" pattern="[0-9]*" enterkeyhint="done" autocomplete="off" placeholder="금액 입력" value="${ui.amount ? ui.amount.toLocaleString('ko-KR') : ''}">
+          <span class="amt-won ${ui.amount ? '' : 'off'}">원</span>
+          <span class="amt-measure" aria-hidden="true"></span>
+        </div>
+        <div class="amt-add">
+          <button data-add="1000">+1천</button><button data-add="10000">+1만</button><button data-add="50000">+5만</button><button data-add="100000">+10만</button>
+          <button data-add="0" class="reset" aria-label="금액 지우기">지우기</button>
         </div>
       </div>`;
   }
@@ -308,6 +334,7 @@
     let html = searchBar();
     if (ui.q.trim()) {
       const rows = ranked(search(ui.q));
+      if (rows.length) html += amountCard(`‘${ui.q.trim()}’에서`);
       html += `<div id="results">${resultsHTML(rows)}</div>`;
       return html;
     }
@@ -320,7 +347,8 @@
     if (!S.cards.length) {
       html += `<div class="section cta"><div><b>내 나라사랑카드를 골라주세요</b><div class="muted">지금은 4개 카드 혜택을 모두 보여줘요</div></div><button data-go="settings">설정</button></div>`;
     }
-    html += `<div class="chips" style="margin:4px -16px 8px">${QUICK.map((k) => `<button class="chip" data-q="${esc(k)}">${esc(k)}</button>`).join('')}</div>`;
+    html += `<div class="chips-label">자주 가는 곳 <span>누르면 바로 금액 입력</span></div>`;
+    html += `<div class="chips" style="margin:0 -16px 8px">${QUICK.map((k) => `<button class="chip" data-q="${esc(k)}">${esc(k)}</button>`).join('')}</div>`;
 
     html += `<div class="section"><h2>섹터별 혜택 <small>받을 수 있는 혜택 수</small></h2><div class="grid">`;
     SECTORS.forEach((s) => {
@@ -389,9 +417,9 @@
     const s = SECTOR[ui.sector];
     const rows = ranked(BENEFITS.filter((b) => b.sector === s.id));
     let html = `<div class="search-wrap" style="padding-bottom:6px"><div class="chips">${SECTORS.map((x) =>
-      `<button class="chip ${x.id === s.id ? 'on' : ''}" data-sector="${x.id}">${x.icon} ${esc(x.name)}</button>`).join('')}</div>
-      <div class="amount"><label for="amt">결제 금액</label><input id="amt" inputmode="numeric" placeholder="선택 입력" value="${ui.amount ? ui.amount.toLocaleString('ko-KR') : ''}"><span>원</span></div></div>`;
+      `<button class="chip ${x.id === s.id ? 'on' : ''}" data-sector="${x.id}">${x.icon} ${esc(x.name)}</button>`).join('')}</div></div>`;
     html += `<h1 class="page-title">${s.icon} ${esc(s.name)}</h1>`;
+    html += amountCard(`${s.name}에서`);
     html += `<div id="results">${best(rows, `${s.name}에서`)}${list(rows, `혜택 ${rows.length}개 <small>좋은 순</small>`) || '<div class="empty"><div class="big">📭</div><p>이 섹터에 해당하는 혜택이 없어요</p></div>'}</div>`;
     return html;
   }
@@ -498,6 +526,7 @@
     const y = window.scrollY;
     $('#view').innerHTML = VIEWS[ui.tab]();
     document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('on', t.dataset.tab === ui.tab));
+    fitAmount();
     if (keepScroll) window.scrollTo(0, y); else window.scrollTo(0, 0);
   }
 
@@ -506,12 +535,37 @@
     const res = $('#results');
     if (ui.tab === 'home') {
       if (!ui.q.trim() || !res) { render(true); focusEnd('#q'); return; }
-      res.innerHTML = resultsHTML(ranked(search(ui.q)));
+      const rows = ranked(search(ui.q));
+      const card = $('.amt-card');
+      if (rows.length && !card) { render(true); focusEnd('#q'); return; }
+      if (card) {
+        card.hidden = !rows.length;
+        $('.amt-label').textContent = `‘${ui.q.trim()}’에서 얼마 결제하나요?`;
+      }
+      res.innerHTML = resultsHTML(rows);
       $('.search').classList.toggle('has-value', !!ui.q);
     } else if (ui.tab === 'sector' && res) {
       const rows = ranked(BENEFITS.filter((b) => b.sector === ui.sector));
       res.innerHTML = best(rows, `${SECTOR[ui.sector].name}에서`) + list(rows, `혜택 ${rows.length}개 <small>좋은 순</small>`);
     }
+  }
+
+  function setAmount(n) {
+    ui.amount = Math.min(Math.max(0, n), 100000000);
+    const el = $('#amt');
+    if (el) el.value = ui.amount ? ui.amount.toLocaleString('ko-KR') : '';
+    const w = $('.amt-won');
+    if (w) w.classList.toggle('off', !ui.amount);
+    fitAmount();
+    refreshResults();
+  }
+
+  function fitAmount() {
+    const el = $('#amt');
+    const m = $('.amt-measure');
+    if (!el || !m) return;
+    m.textContent = el.value || el.placeholder;
+    el.style.width = m.offsetWidth + 6 + 'px';
   }
 
   function focusEnd(sel) {
@@ -556,7 +610,13 @@
     if (d.goto) { ui.card = d.card; go(d.goto); return; }
     if (d.tab) { if (d.tab === ui.tab && ui.tab === 'home') { ui.q = ''; } go(d.tab); return; }
     if (d.go) { go(d.go); return; }
-    if (d.q) { ui.q = d.q; render(); return; }
+    if (d.q) { ui.q = d.q; render(); $('#amt') && $('#amt').focus(); return; }
+    if (d.add !== undefined) {
+      const n = Number(d.add);
+      setAmount(n ? ui.amount + n : 0);
+      if (!n) $('#amt').focus();
+      return;
+    }
     if (d.sector) { ui.sector = d.sector; ui.tab = 'sector'; render(); return; }
     if (d.card) { ui.card = d.card; render(true); return; }
     if (d.id) { ui.open.has(d.id) ? ui.open.delete(d.id) : ui.open.add(d.id); t.classList.toggle('open'); return; }
@@ -569,7 +629,7 @@
       S.savings = S.savings.includes(d.saving) ? S.savings.filter((x) => x !== d.saving) : [...S.savings, d.saving];
       save(); render(true); return;
     }
-    if (t.id === 'clear') { ui.q = ''; render(); focusEnd('#q'); return; }
+    if (t.id === 'clear') { ui.q = ''; ui.amount = 0; render(); focusEnd('#q'); return; }
     if (t.id === 'done') {
       S.onboarded = true; save(); go('home');
       toast(S.cards.length ? '맞춤 혜택을 준비했어요' : '카드는 나중에 설정에서 고를 수 있어요');
@@ -583,12 +643,7 @@
   document.addEventListener('input', (ev) => {
     const el = ev.target;
     if (el.id === 'q') { ui.q = el.value; refreshResults(); }
-    if (el.id === 'amt') {
-      const n = parseInt(el.value.replace(/[^0-9]/g, ''), 10) || 0;
-      ui.amount = Math.min(n, 100000000);
-      el.value = ui.amount ? ui.amount.toLocaleString('ko-KR') : '';
-      refreshResults();
-    }
+    if (el.id === 'amt') setAmount(parseInt(el.value.replace(/[^0-9]/g, ''), 10) || 0);
   });
 
   document.addEventListener('change', (ev) => {
@@ -602,7 +657,8 @@
   });
 
   document.addEventListener('keydown', (ev) => {
-    if (ev.target.id === 'q' && ev.key === 'Enter') ev.target.blur();
+    if (ev.target.id === 'q' && ev.key === 'Enter') { const a = $('#amt'); a ? a.focus() : ev.target.blur(); }
+    if (ev.target.id === 'amt' && ev.key === 'Enter') ev.target.blur();
     if ((ev.key === 'Enter' || ev.key === ' ') && ev.target.dataset && ev.target.dataset.id) { ev.preventDefault(); ev.target.click(); }
   });
 
