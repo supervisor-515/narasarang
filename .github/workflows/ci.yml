@@ -1,0 +1,18 @@
+name: 검증
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: 문법 검사
+        run: for f in js/*.js sw.js tests/*.js; do node --check "$f"; done
+      - name: 계산 회귀 테스트 · 데이터 · 아이콘 · 서비스워커 검증
+        run: node tests/run.js

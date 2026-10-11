@@ -1,10 +1,8 @@
 (function () {
   'use strict';
 
-  const { BANKS, CARDS, SECTORS, BENEFITS, UPDATED } = window.DATA;
-  const CARD = Object.fromEntries(CARDS.map((c) => [c.id, c]));
-  const SECTOR = Object.fromEntries(SECTORS.map((s) => [s.id, s]));
-  const BANK = Object.fromEntries(BANKS.map((b) => [b.id, b]));
+  const DATA = window.DATA;
+  const { BANKS, CARDS, SECTORS, BENEFITS, LEGACY_IDS } = DATA;
 
   const SPEND_OPTIONS = [
     [null, '모름'], [0, '8만원 미만'], [80000, '8만원 이상'], [100000, '10만원 이상'], [200000, '20만원 이상'],
@@ -13,212 +11,89 @@
   const QUICK = ['PX', '편의점', '스타벅스', '택시', '배달의민족', 'KTX', 'CGV', '지하철', '놀이공원', '넷플릭스', '쿠팡', '아웃백'];
 
   // ───────── 저장소 ─────────
-  const KEY = 'narasarang.settings.v1';
-  const defaults = () => ({ cards: [], salary: null, savings: [], spend: {}, showAll: false, onboarded: false });
-  function load() {
-    try { return Object.assign(defaults(), JSON.parse(localStorage.getItem(KEY) || '{}')); } catch (e) { return defaults(); }
-  }
-  function save() {
-    try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { /* 저장 불가 환경 */ }
-  }
-  let S = load();
-
-  // 결제 기록: 확정한 결제를 쌓아 월·일 한도와 횟수를 차감
-  const LEDGER_KEY = 'narasarang.ledger.v1';
-  function loadLedger() {
+  // 쓰기 후 다시 읽어 실제로 저장됐는지 확인
+  function store(key, value) {
     try {
-      const cut = Date.now() - 400 * 864e5; // 연 횟수 계산용으로 13개월치만 보관
-      return (JSON.parse(localStorage.getItem(LEDGER_KEY) || '[]') || []).filter((e) => e && e.ts > cut);
-    } catch (e) { return []; }
+      const s = JSON.stringify(value);
+      localStorage.setItem(key, s);
+      return localStorage.getItem(key) === s;
+    } catch (e) { return false; }
   }
-  function saveLedger() {
-    try { localStorage.setItem(LEDGER_KEY, JSON.stringify(LEDGER)); } catch (e) { /* 저장 불가 환경 */ }
+  function read(key) {
+    try { return JSON.parse(localStorage.getItem(key) || 'null'); } catch (e) { return null; }
   }
-  let LEDGER = loadLedger();
 
-  const ui = { tab: S.onboarded ? 'home' : 'settings', q: '', amount: 0, sector: 'px', card: null, open: new Set() };
-  const BENEFIT = Object.fromEntries(BENEFITS.map((b) => [b.id, b]));
+  const KEY = 'narasarang.settings.v1';
+  const LEDGER_KEY = 'narasarang.ledger.v2';
+  const LEDGER_V1 = 'narasarang.ledger.v1';
+  const defaults = () => ({
+    cards: [], salary: null, savings: [], spend: {}, spendAt: {}, firstUse: {},
+    soldier: null, checks: {}, showAll: false, onboarded: false,
+  });
+  let S = Object.assign(defaults(), read(KEY) || {});
+  let LEDGER = [];
+  const E = window.Engine.create(DATA, { getS: () => S, getLedger: () => LEDGER });
+  const { CARD, SECTOR, BANK, BENEFIT, NEEDS, won, man, ymd, thisMonth } = E;
+
+  // 예전 설정: 사용액 입력 월이 없으면 이번 달로 간주
+  Object.keys(S.spend).forEach((id) => { if (!S.spendAt[id]) S.spendAt[id] = thisMonth(); });
+
+  function saveS() {
+    const ok = store(KEY, S);
+    if (!ok) toast('⚠️ 설정을 저장하지 못했어요. 개인정보 보호 모드인지 확인해주세요');
+    return ok;
+  }
+
+  // ───────── 결제 기록 (거래 단위) ─────────
+  // { id, ts, card, amt, items: [{ b, k, v, pooled, unit }] } — 한 번의 결제에 기본·추가 혜택을 묶음
+  const isTx = (t) => t && typeof t.id === 'string' && Number.isFinite(t.ts) && CARD[t.card] && Number.isFinite(t.amt)
+    && Array.isArray(t.items) && t.items.length > 0
+    && t.items.every((i) => i && typeof i.b === 'string' && typeof i.k === 'string' && Number.isFinite(i.v));
+  const fixId = (x) => LEGACY_IDS[x] || x;
+  const unitOf = (b) => (b && (b.type === '적립' || (b.calc && b.calc.steps)) ? 'point' : 'won');
+
+  function loadLedger() {
+    const cut = Date.now() - 400 * 864e5; // 연 횟수 계산용으로 13개월치 보관
+    const v2 = read(LEDGER_KEY);
+    if (v2 && v2.v === 2 && Array.isArray(v2.tx)) return v2.tx.filter(isTx).filter((t) => t.ts > cut);
+    // v1(혜택별 한 줄) → 같은 시각·카드끼리 거래로 묶기
+    const v1 = read(LEDGER_V1);
+    if (!Array.isArray(v1)) return [];
+    const map = new Map();
+    v1.forEach((e) => {
+      if (!e || !Number.isFinite(e.ts) || !Number.isFinite(e.v)) return;
+      const b = fixId(e.b);
+      const key = e.ts + '|' + e.card;
+      if (!map.has(key)) map.set(key, { id: 't' + e.ts + '-' + e.card, ts: e.ts, card: e.card, amt: e.amt, items: [] });
+      map.get(key).items.push({ b, k: fixId(e.k), v: e.v, pooled: !!e.pooled, unit: unitOf(BENEFIT[b]) });
+    });
+    const tx = [...map.values()].filter(isTx).filter((t) => t.ts > cut);
+    if (store(LEDGER_KEY, { v: 2, tx })) { try { localStorage.removeItem(LEDGER_V1); } catch (e) { /* 무시 */ } }
+    return tx;
+  }
+  const saveLedger = () => store(LEDGER_KEY, { v: 2, tx: LEDGER });
+  LEDGER = loadLedger();
+
+  const ui = {
+    tab: S.onboarded ? 'home' : 'settings', q: '', amount: 0, sector: 'px', card: null,
+    open: new Set(), txOpen: new Set(), month: thisMonth(),
+  };
 
   // ───────── 유틸 ─────────
   const $ = (sel, el = document) => el.querySelector(sel);
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-  const won = (n) => Math.round(n).toLocaleString('ko-KR') + '원';
-  const man = (n) => (n >= 10000 ? (n / 10000).toLocaleString('ko-KR') + '만원' : won(n));
-  const norm = (s) => String(s || '').toLowerCase().replace(/[\s·,()/._\-]/g, '');
   const cardVars = (c) => `--c1:${c.color};--c2:${c.color2};--ct:${c.text}`;
   const owned = (id) => S.cards.includes(id);
   const visibleCards = () => (S.showAll || S.cards.length === 0 ? CARDS.map((c) => c.id) : S.cards);
-  const resolve = (v) => (typeof v === 'function' ? v(S) : v);
-  const pad = (n) => String(n).padStart(2, '0');
-  const ymd = (t) => { const d = new Date(t); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
-  const thisMonth = () => ymd(Date.now()).slice(0, 7);
-  const monthEntries = () => { const m = thisMonth(); return LEDGER.filter((e) => ymd(e.ts).startsWith(m)); };
-
-  // ───────── 한도 차감 ─────────
-  const inBand = (r, amt) => !(r.under && !(amt < r.under)) && !(r.over && !(amt >= r.over));
-
-  function usage(key, rule) {
-    const today = ymd(Date.now());
-    const u = { mSum: 0, mCnt: 0, dSum: 0, dCnt: 0, yCnt: 0 };
-    const year = today.slice(0, 4);
-    const month = today.slice(0, 7);
-    LEDGER.forEach((e) => {
-      if (e.k !== key || (rule && !inBand(rule, e.amt))) return;
-      const d = ymd(e.ts);
-      if (d.startsWith(year)) u.yCnt++;
-      if (d.startsWith(month)) { u.mSum += e.v; u.mCnt++; }
-      if (d === today) { u.dSum += e.v; u.dCnt++; }
-    });
-    return u;
-  }
-
-  function pooledUsed(cardId) {
-    return monthEntries().filter((e) => e.card === cardId && e.pooled).reduce((a, e) => a + e.v, 0);
-  }
-
-  // amt가 null이면 금액 구간과 무관한 한도만 확인
-  function remaining(b, amt) {
-    let rem = Infinity;
-    let why = '';
-    const key = b.limKey || b.id;
-    (b.lim || []).forEach((r) => {
-      const banded = r.under || r.over;
-      if (banded && (amt == null || !inBand(r, amt))) return;
-      const u = usage(key, banded ? r : null);
-      const m = resolve(r.month); const d = resolve(r.day);
-      const mc = resolve(r.monthCount); const dc = resolve(r.dayCount); const yc = resolve(r.yearCount);
-      const band = r.under ? `${man(r.under)} 미만 ` : r.over ? `${man(r.over)} 이상 ` : '';
-      if (m != null && m - u.mSum < rem) { rem = Math.max(0, m - u.mSum); if (!rem) why = `${band}이번 달 한도 소진`; }
-      if (d != null && d - u.dSum < rem) { rem = Math.max(0, d - u.dSum); if (!rem) why = `${band}오늘 한도 소진`; }
-      if (mc != null && u.mCnt >= mc) { rem = 0; why = `${band}이번 달 ${mc}회 모두 사용`; }
-      if (dc != null && u.dCnt >= dc) { rem = 0; why = `${band}오늘 ${dc}회 모두 사용`; }
-      if (yc != null && u.yCnt >= yc) { rem = 0; why = `${band}올해 ${yc}회 모두 사용`; }
-    });
-    if (b.req && b.req.pooled) {
-      const lim = tierLimit(CARD[b.card], S.spend[b.card]);
-      if (lim != null && lim - pooledUsed(b.card) < rem) {
-        rem = Math.max(0, lim - pooledUsed(b.card));
-        if (!rem) why = '통합한도 소진';
-      }
-    }
-    return { rem, why };
-  }
-
-  // ───────── 조건 판정 ─────────
-  function evaluate(b, amt = ui.amount || null) {
-    const r = b.req || {};
-    const why = [];
-    let status = 'ok';
-    if (r.salary && S.salary !== r.salary) {
-      status = 'no';
-      why.push(`${BANK[r.salary].name} 급여이체 필요`);
-    }
-    if (r.spend) {
-      if (r.waiveSalary && S.salary === r.waiveSalary) {
-        why.push('급여이체로 실적 면제');
-      } else {
-        const sp = S.spend[b.card];
-        if (sp == null) {
-          if (status === 'ok') status = 'check';
-          why.push(`전월 ${man(r.spend)} 이상`);
-        } else if (sp < r.spend) {
-          status = 'no';
-          why.push(`전월 ${man(r.spend)} 필요`);
-        }
-      }
-    }
-    if (b.until && new Date(b.until + 'T23:59:59') < new Date()) {
-      status = 'no';
-      why.push('종료된 프로모션');
-    }
-    if (!owned(b.card) && S.cards.length) {
-      return { status: 'none', why: ['미보유 카드'] };
-    }
-    if (status !== 'no' && (b.lim || (b.req && b.req.pooled))) {
-      const left = remaining(b, amt);
-      if (left.rem === 0 && status !== 'no') { status = 'no'; why.unshift(left.why); }
-    }
-    return { status, why };
-  }
-
-  function estimate(b, amt) {
-    const c = b.calc;
-    if (!c || !amt) return null;
-    if (c.min && amt < c.min) return { v: 0, note: `${man(c.min)} 이상 결제 시` };
-    if (c.steps) {
-      let v = 0;
-      c.steps.forEach(([m, p]) => { if (amt >= m) v = p; });
-      return limitBy(b, amt, { v, note: v ? 'P 적립' : `${man(c.steps[0][0])} 이상 시` });
-    }
-    if (c.fixed) return limitBy(b, amt, { v: c.fixed });
-    let rate = 0;
-    (c.tiers || []).forEach(([m, p]) => { if (amt >= m) rate = p; });
-    const base = c.upto ? Math.min(amt, c.upto) : amt;
-    let v = (base * rate) / 100;
-    if (c.cap) v = Math.min(v, c.cap);
-    if (c.capUnder && amt < c.capUnder[0]) v = Math.min(v, c.capUnder[1]);
-    return withExtra(b, amt, limitBy(b, amt, { v: Math.floor(v), rate }));
-  }
-
-  // 중복 적용 혜택(예: IBK PX 기본 + 특별할인)을 예상액에 합산
-  function withExtra(b, amt, x) {
-    const eb = b.extra && BENEFIT[b.extra];
-    if (!eb || !x) return x;
-    const st = evaluate(eb, amt).status;
-    const ex = (st === 'ok' || st === 'check') && estimate(eb, amt);
-    if (ex && ex.v > 0) { x.extra = { b: eb, v: ex.v }; x.v += ex.v; }
-    return x;
-  }
-
-  function limitBy(b, amt, x) {
-    const left = remaining(b, amt);
-    if (left.rem < x.v) {
-      x.v = left.rem;
-      x.note = left.rem ? '남은 한도까지만' : left.why;
-      x.partial = true;
-    }
-    return x;
-  }
-
-  function tierLimit(card, spend) {
-    if (spend == null) return null;
-    let lim = 0;
-    card.tiers.forEach(([m, l]) => { if (spend >= m) lim = l; });
-    return lim;
-  }
-
-  const ORDER = { ok: 0, check: 1, no: 2, none: 3 };
-  function ranked(list) {
-    return list
-      .filter((b) => visibleCards().includes(b.card))
-      .map((b) => ({ b, e: evaluate(b), x: estimate(b, ui.amount) }))
-      .sort((p, q) => (ORDER[p.e.status] - ORDER[q.e.status])
-        || (ui.amount ? ((q.x ? q.x.v : -1) - (p.x ? p.x.v : -1)) : 0)
-        || (q.b.rate - p.b.rate));
-  }
-
-  // 줄임말 → 가맹점 이름
-  const ALIAS = {
-    스벅: '스타벅스', 맥날: '맥도날드', 롯리: '롯데리아', 배민: '배달의민족', 넷플: '넷플릭스', 유튭: '유튜브',
-    피엑스: 'px', 씨유: 'cu', 지에스: 'gs25', 이마트: '이마트24', 메가: '메가', 빕스: 'vips', 올영: '올리브영',
-    카택: '카카오t', 카카오택시: '카카오t', 롯월: '롯데월드', 에버: '에버랜드', 무쿠: '무신사', 지마켓: 'g마켓', 쿠팡이츠: '쿠팡이츠',
+  const pressed = (on) => `aria-pressed="${on ? 'true' : 'false'}"`;
+  const fmtV = (v, unit) => (unit === 'point' ? v.toLocaleString('ko-KR') + 'P' : won(v));
+  const txSums = (txs) => {
+    const sum = { won: 0, point: 0 };
+    txs.forEach((t) => t.items.forEach((i) => { sum[i.unit === 'point' ? 'point' : 'won'] += i.v; }));
+    return sum;
   };
-
-  // 가맹점·혜택 이름이 맞는 결과를 우선, 없으면 업종(섹터)으로 넓혀서 찾기
-  function search(q) {
-    const tokens = q.trim().split(/\s+/).map(norm).filter(Boolean).map((t) => norm(ALIAS[t] || t));
-    if (!tokens.length) return [];
-    const strong = [];
-    const weak = [];
-    BENEFITS.forEach((b) => {
-      const sec = SECTOR[b.sector];
-      const own = norm([b.title, b.where, b.kw, CARD[b.card].short, CARD[b.card].name, b.group].join(' '));
-      const all = own + norm(sec.name + sec.kw);
-      if (tokens.every((t) => own.includes(t))) strong.push(b);
-      else if (tokens.every((t) => all.includes(t))) weak.push(b);
-    });
-    return strong.length ? strong : weak;
-  }
+  const monthTx = (m, card) => LEDGER.filter((t) => ymd(t.ts).startsWith(m) && (!card || t.card === card));
+  const ranked = (list) => E.rank(list, ui.amount, visibleCards());
 
   // ───────── 렌더링 조각 ─────────
   function logo(c) {
@@ -227,9 +102,18 @@
 
   function statusPill(e) {
     if (e.status === 'ok') return `<span class="pill ok">✓ 받을 수 있어요</span>`;
-    if (e.status === 'check') return `<span class="pill check">실적 확인 · ${esc(e.why.join(' · '))}</span>`;
+    if (e.status === 'check') return `<span class="pill check">확인 필요 · ${esc(e.why.join(' · '))}</span>`;
     if (e.status === 'none') return `<span class="pill no">미보유 카드</span>`;
     return `<span class="pill no">${esc(e.why.join(' · '))}</span>`;
+  }
+
+  function needButtons(e) {
+    return e.missing.map((k) => {
+      const n = NEEDS[k];
+      if (n.flag) return `<button class="flag" data-flag="${esc(n.flag)}">✓ ${esc(n.flagLabel)}</button>`;
+      if (k === 'soldier') return `<span class="flag-row">현역 병사인가요? <button class="flag" data-soldier="1">네</button><button class="flag ghost" data-soldier="0">아니요</button></span>`;
+      return '';
+    }).join('');
   }
 
   function item({ b, e, x }) {
@@ -238,15 +122,15 @@
     let val = `<b>${esc(b.value)}</b><i>${esc(b.type)}</i>`;
     if (x) {
       val = x.v > 0
-        ? `<b class="est">${b.calc.steps ? x.v.toLocaleString('ko-KR') + 'P' : '−' + won(x.v)}</b><i>${x.extra ? `${esc(x.extra.b.title.replace(/.*\) ?/, ''))} ${won(x.extra.v)} 포함` : `${esc(b.value)} ${esc(b.type)}`}</i>`
+        ? `<b class="est">${x.unit === 'point' ? fmtV(x.v, 'point') : '−' + won(x.v)}</b><i>${x.extra ? `${esc(x.extra.b.title.replace(/.*\) ?/, ''))} ${won(x.extra.v)} 포함` : x.note ? esc(x.note) : `${esc(b.value)} ${esc(b.type)}`}</i>`
         : `<b>${esc(b.value)}</b><i>${esc(x.note || b.type)}</i>`;
     }
     const personal = b.personal ? b.personal(S) : '';
-    const used = usage(b.limKey || b.id, null);
-    const canConfirm = !b.addon && x && x.v > 0 && ui.amount && (e.status === 'ok' || e.status === 'check');
-    const extra = e.why.filter((w) => w.includes('면제')).map((w) => `<span class="pill ok">${esc(w)}</span>`).join('');
+    const used = E.usage(E.keyOf(b), null);
+    const canConfirm = !b.addon && !b.verify && x && x.v > 0 && ui.amount && (e.status === 'ok' || e.status === 'check');
+    const src = c.source;
     return `
-      <div role="button" tabindex="0" class="item ${e.status === 'none' || e.status === 'no' ? 'dim' : ''} ${open ? 'open' : ''}" data-id="${b.id}">
+      <div role="button" tabindex="0" aria-expanded="${open}" class="item ${e.status === 'none' || e.status === 'no' ? 'dim' : ''} ${open ? 'open' : ''}" data-id="${esc(b.id)}">
         <div class="row">
           ${logo(c)}
           <div class="body">
@@ -256,25 +140,30 @@
           <div class="val">${val}</div>
         </div>
         <div class="meta">
-          ${statusPill(e)}${extra}
+          ${statusPill(e)}${e.good.map((g) => `<span class="pill ok">${esc(g)}</span>`).join('')}
+          ${b.ctx && b.ctx.length ? '<span class="pill tag">ⓘ 이용 조건</span>' : ''}
           ${b.until ? `<span class="pill until">~${esc(b.until.slice(2).replace(/-/g, '.'))}</span>` : ''}
           ${b.req && b.req.pooled ? '<span class="pill tag">통합한도</span>' : ''}
-          ${used.mCnt ? `<span class="pill used">이번 달 ${used.mSum ? won(used.mSum) + ' · ' : ''}${used.mCnt}회</span>` : ''}
+          ${used.mCnt ? `<span class="pill used">이번 달 ${used.mSum ? fmtV(used.mSum, unitOf(b)) + ' · ' : ''}${used.mCnt}회</span>` : ''}
         </div>
-        ${canConfirm ? confirmBtn(b, x) : ''}
+        ${canConfirm ? confirmBtn(b, x, e) : ''}
         <div class="detail">
           <p><b>${esc(c.name)}</b> · ${esc(b.group)}</p>
           ${b.limit ? `<p>한도 · ${esc(b.limit)}</p>` : ''}
+          ${b.ctx && b.ctx.length ? `<p class="warn">결제 전 확인 · ${b.ctx.map(esc).join(' · ')}</p>` : ''}
+          ${b.verify ? `<p class="warn">⚠️ ${esc(b.verify)}</p>` : ''}
+          ${e.missing.length ? `<div class="flags">${needButtons(e)}</div>` : ''}
           ${personal ? `<p class="me">${esc(personal)}</p>` : ''}
           ${b.notes && b.notes.length ? `<ul>${b.notes.map((n) => `<li>${esc(n)}</li>`).join('')}</ul>` : ''}
-          ${!ui.amount && b.calc && !b.addon && ui.tab !== 'cards' ? '<p class="me">위에 결제 금액을 넣으면 할인액 계산과 결제 확정을 할 수 있어요</p>' : ''}
+          ${!ui.amount && b.calc && !b.addon && ui.tab !== 'cards' ? '<p class="me">위에 결제 금액을 넣으면 할인액 계산과 결제 기록을 할 수 있어요</p>' : ''}
+          <p class="src">출처 · ${esc(src.doc)} (${esc(src.date)}) · <a href="${esc(src.url)}" target="_blank" rel="noopener">공식 홈페이지</a></p>
         </div>
       </div>`;
   }
 
-  function confirmBtn(b, x) {
-    const amtTxt = b.calc.steps ? x.v.toLocaleString('ko-KR') + 'P' : won(x.v);
-    return `<button class="confirm" data-confirm="${esc(b.id)}">${esc(won(ui.amount))} 결제 확정 · ${esc(amtTxt)} 기록</button>`;
+  function confirmBtn(b, x, e) {
+    const label = e.status === 'ok' ? '결제 기록' : '조건 충족 시 결제 기록';
+    return `<button class="confirm" data-confirm="${esc(b.id)}">${esc(won(ui.amount))} ${label} · ${esc(fmtV(x.v, x.unit))}</button>`;
   }
 
   function list(rows, head) {
@@ -283,21 +172,30 @@
   }
 
   function best(rows, label) {
-    const top = rows.find((r) => r.e.status === 'ok' && !r.b.addon && (!ui.amount || !r.x || r.x.v > 0));
+    const top = E.bestOf(rows, ui.amount);
     if (!top) {
-      const spent = rows.filter((r) => r.e.why && /소진|모두 사용/.test(r.e.why[0] || ''));
-      return spent.length ? `<div class="section"><b>쓸 수 있는 한도를 다 썼어요</b>${spent.map((r) => `<div class="muted">${esc(CARD[r.b.card].short + ' ' + r.b.title)} · ${esc(r.e.why[0])}</div>`).join('')}</div>` : '';
+      const spent = rows.filter((r) => r.e.status === 'no' && /소진|모두 사용/.test(r.e.why[0] || ''));
+      if (spent.length) {
+        return `<div class="section"><b>쓸 수 있는 한도를 다 썼어요</b>${spent.map((r) => `<div class="muted">${esc(CARD[r.b.card].short + ' ' + r.b.title)} · ${esc(r.e.why[0])}</div>`).join('')}</div>`;
+      }
+      const checks = rows.filter((r) => r.e.status === 'check');
+      if (checks.length) {
+        return `<div class="section"><b>조건 확인이 필요한 혜택만 있어요</b><div class="muted">아래 혜택을 눌러 조건을 확인하면 정확히 추천해드려요</div></div>`;
+      }
+      return '';
     }
     const c = CARD[top.b.card];
-    const v = top.x && top.x.v > 0 ? (top.b.calc.steps ? top.x.v.toLocaleString('ko-KR') + 'P 적립' : won(top.x.v) + ' 아껴요') : top.b.value;
+    const ctx = top.b.ctx || [];
+    const v = top.x && top.x.v > 0 ? (top.x.unit === 'point' ? fmtV(top.x.v, 'point') + ' 적립' : won(top.x.v) + ' 아껴요') : top.b.value;
     return `
       <div class="best ${c.id === 'kb' ? 'dark-text' : ''}" style="${cardVars(c)}">
-        <div class="k">${esc(label)} 가장 좋은 혜택</div>
+        <div class="k">${esc(label)} ${ctx.length ? '조건 충족 시 예상 혜택' : '추천'}</div>
         <div class="t">${esc(c.name)}로 결제하세요</div>
         <div class="v">${esc(v)}</div>
         <div class="s">${esc(top.b.title)}${top.x && top.x.extra ? ` + ${esc(top.x.extra.b.title)} ${won(top.x.extra.v)}` : top.b.limit ? ' · ' + esc(top.b.limit) : ''}</div>
-        ${top.x && top.x.partial && top.x.v > 0 ? '<div class="s">⚠️ 남은 한도까지만 적용돼요</div>' : ''}
-        ${top.x && top.x.v > 0 && ui.amount ? `<button class="best-confirm" data-confirm="${esc(top.b.id)}">이 카드로 결제 확정</button>` : ''}
+        ${top.x && top.x.partial && top.x.base > 0 ? '<div class="s">⚠️ 남은 한도까지만 적용돼요</div>' : ''}
+        ${ctx.length ? `<div class="best-ctx">결제 전 확인 · ${ctx.map(esc).join(' · ')}</div>` : ''}
+        ${top.x && top.x.v > 0 && ui.amount ? `<button class="best-confirm" data-confirm="${esc(top.b.id)}">이 카드로 결제했어요 · 기록</button>` : ''}
       </div>`;
   }
 
@@ -306,8 +204,8 @@
       <div class="search-wrap">
         <label class="search ${ui.q ? 'has-value' : ''}">
           <span aria-hidden="true">🔍</span>
-          <input id="q" type="search" enterkeyhint="search" autocomplete="off" placeholder="어디서 결제하나요? (예: 스타벅스, PX)" value="${esc(ui.q)}">
-          <button class="clear" id="clear" type="button" aria-label="지우기">✕</button>
+          <input id="q" type="search" enterkeyhint="search" autocomplete="off" aria-label="가맹점 검색" placeholder="어디서 결제하나요? (예: 스타벅스, PX)" value="${esc(ui.q)}">
+          <button class="clear" id="clear" type="button" aria-label="검색어 지우기">✕</button>
         </label>
       </div>`;
   }
@@ -333,8 +231,8 @@
   function viewHome() {
     let html = searchBar();
     if (ui.q.trim()) {
-      const rows = ranked(search(ui.q));
-      if (rows.length) html += amountCard(`‘${ui.q.trim()}’에서`);
+      const rows = ranked(E.search(ui.q));
+      html += `<div class="amt-slot" ${rows.length ? '' : 'hidden'}>${amountCard(`‘${ui.q.trim()}’에서`)}</div>`;
       html += `<div id="results">${resultsHTML(rows)}</div>`;
       return html;
     }
@@ -347,13 +245,17 @@
     if (!S.cards.length) {
       html += `<div class="section cta"><div><b>내 나라사랑카드를 골라주세요</b><div class="muted">지금은 4개 카드 혜택을 모두 보여줘요</div></div><button data-go="settings">설정</button></div>`;
     }
+    const stale = S.cards.filter((id) => E.spendStale(id));
+    if (stale.length) {
+      html += `<div class="section cta"><div><b>달이 바뀌었어요</b><div class="muted">${stale.map((id) => CARD[id].short).join('·')} 지난달 사용액을 다시 입력해주세요</div></div><button data-go="settings">입력</button></div>`;
+    }
     html += `<div class="chips-label">자주 가는 곳 <span>누르면 바로 금액 입력</span></div>`;
     html += `<div class="chips" style="margin:0 -16px 8px">${QUICK.map((k) => `<button class="chip" data-q="${esc(k)}">${esc(k)}</button>`).join('')}</div>`;
 
     html += `<div class="section"><h2>섹터별 혜택 <small>받을 수 있는 혜택 수</small></h2><div class="grid">`;
     SECTORS.forEach((s) => {
-      const n = BENEFITS.filter((b) => b.sector === s.id && visibleCards().includes(b.card) && evaluate(b).status === 'ok').length;
-      html += `<button class="cell" data-sector="${s.id}"><span class="ico">${s.icon}</span><span class="lbl">${esc(s.name)}</span>${n ? `<span class="badge">${n}</span>` : ''}</button>`;
+      const n = BENEFITS.filter((b) => b.sector === s.id && visibleCards().includes(b.card) && E.evaluate(b, null).status === 'ok').length;
+      html += `<button class="cell" data-sector="${s.id}"><span class="ico" aria-hidden="true">${s.icon}</span><span class="lbl">${esc(s.name)}</span>${n ? `<span class="badge" aria-label="${n}개">${n}</span>` : ''}</button>`;
     });
     html += `</div></div>`;
 
@@ -364,64 +266,45 @@
 
     const pending = ranked(BENEFITS).filter((r) => r.e.status === 'check');
     if (pending.length) {
-      html += `<div class="section cta"><div><b>실적 조건 혜택 ${pending.length}개</b><div class="muted">지난달 사용액을 입력하면 정확히 알려드려요</div></div><button data-go="settings">입력</button></div>`;
+      html += `<div class="section cta"><div><b>확인이 필요한 혜택 ${pending.length}개</b><div class="muted">사용액·현역병 여부 등을 입력하면 정확히 알려드려요</div></div><button data-go="settings">입력</button></div>`;
     }
     return html;
   }
 
   function resultsHTML(rows) {
     if (!rows.length) {
-      return `<div class="empty"><div class="big">🤔</div><p>‘${esc(ui.q)}’ 관련 혜택을 찾지 못했어요<br><span class="muted">가맹점 이름이나 업종으로 검색해보세요</span></p></div>`;
+      return `<div class="empty"><div class="big">🤔</div><p>‘${esc(ui.q)}’ 관련 혜택을 찾지 못했어요<br><span class="muted">가맹점 이름이나 업종으로 검색해보세요. 군부대 매장은 ‘PX’, ‘해군마트’로 찾아요</span></p></div>`;
     }
     const okN = rows.filter((r) => r.e.status === 'ok').length;
-    return best(rows, `‘${ui.q.trim()}’에서`) + list(rows, `검색 결과 ${rows.length}개 <small>받을 수 있는 혜택 ${okN}개</small>`);
+    return best(rows, `‘${ui.q.trim()}’`) + list(rows, `검색 결과 ${rows.length}개 <small>받을 수 있는 혜택 ${okN}개</small>`);
   }
 
   function monthSummary() {
-    const es = monthEntries();
-    if (!es.length) return '';
-    const total = es.reduce((a, e) => a + e.v, 0);
-    const byCard = CARDS.map((c) => [c, es.filter((e) => e.card === c.id).reduce((a, e) => a + e.v, 0)]).filter(([, v]) => v);
-    return `<div class="section"><h2>이번 달 받은 혜택 <small>${es.length}건 기록</small></h2>
-      <div class="saved">${won(total)}</div>
-      <div class="opts" style="margin-top:10px">${byCard.map(([c, v]) => `<button class="opt" data-card="${c.id}" data-goto="cards">${esc(c.short)} ${won(v)}</button>`).join('')}</div>
+    const txs = monthTx(thisMonth());
+    if (!txs.length) return '';
+    const sum = txSums(txs);
+    const byCard = CARDS.map((c) => [c, txSums(txs.filter((t) => t.card === c.id))]).filter(([, v]) => v.won || v.point);
+    return `<div class="section"><h2>이번 달 기록한 예상 혜택 <small>결제 ${txs.length}건</small></h2>
+      <div class="saved">${won(sum.won)}${sum.point ? ` <span class="pt">+ ${fmtV(sum.point, 'point')}</span>` : ''}</div>
+      <p class="hint" style="margin-top:4px">직접 기록한 결제로 계산한 금액이에요. 실제 카드사 지급액과 다를 수 있어요.</p>
+      <div class="opts" style="margin-top:10px">${byCard.map(([c, v]) => `<button class="opt" data-card="${c.id}" data-goto="cards">${esc(c.short)} ${won(v.won)}${v.point ? ' · ' + fmtV(v.point, 'point') : ''}</button>`).join('')}</div>
     </div>`;
-  }
-
-  function ledgerSection(c) {
-    const es = monthEntries().filter((e) => e.card === c.id).sort((a, b) => b.ts - a.ts);
-    const lim = tierLimit(c, S.spend[c.id]);
-    const pooled = pooledUsed(c.id);
-    const total = es.reduce((a, e) => a + e.v, 0);
-    let html = `<div class="section"><h2>이번 달 기록 <small>${thisMonth().replace('-', '.')}</small></h2>
-      <div class="kv"><span>받은 혜택 합계</span><b>${won(total)}</b></div>`;
-    if (lim) {
-      const pct = Math.min(100, Math.round((pooled / lim) * 100));
-      html += `<div class="kv"><span>통합한도 사용</span><b>${won(pooled)} / ${won(lim)}</b></div>
-        <div class="meter"><div style="width:${pct}%"></div></div>`;
-    }
-    if (!es.length) {
-      html += `<p class="hint">검색 화면에서 결제 금액을 넣고 ‘결제 확정’을 누르면 여기 쌓여요. 한도를 다 쓰면 다른 카드를 추천해드려요.</p>`;
-    }
-    es.forEach((e) => {
-      const b = BENEFIT[e.b];
-      const d = new Date(e.ts);
-      html += `<div class="led"><div><b>${esc(b ? b.title : e.title)}</b><div class="muted">${d.getMonth() + 1}.${d.getDate()} · ${won(e.amt)} 결제</div></div>
-        <div class="led-v">−${won(e.v)}<button data-del="${e.id}" aria-label="기록 삭제">✕</button></div></div>`;
-    });
-    return html + '</div>';
   }
 
   // ───────── 화면: 섹터 ─────────
   function viewSector() {
     const s = SECTOR[ui.sector];
     const rows = ranked(BENEFITS.filter((b) => b.sector === s.id));
-    let html = `<div class="search-wrap" style="padding-bottom:6px"><div class="chips">${SECTORS.map((x) =>
-      `<button class="chip ${x.id === s.id ? 'on' : ''}" data-sector="${x.id}">${x.icon} ${esc(x.name)}</button>`).join('')}</div></div>`;
+    let html = `<div class="search-wrap" style="padding-bottom:6px"><div class="chips" role="group" aria-label="섹터">${SECTORS.map((x) =>
+      `<button class="chip ${x.id === s.id ? 'on' : ''}" ${pressed(x.id === s.id)} data-sector="${x.id}">${x.icon} ${esc(x.name)}</button>`).join('')}</div></div>`;
     html += `<h1 class="page-title">${s.icon} ${esc(s.name)}</h1>`;
     html += amountCard(`${s.name}에서`);
-    html += `<div id="results">${best(rows, `${s.name}에서`)}${list(rows, `혜택 ${rows.length}개 <small>좋은 순</small>`) || '<div class="empty"><div class="big">📭</div><p>이 섹터에 해당하는 혜택이 없어요</p></div>'}</div>`;
+    html += `<div id="results">${sectorResults(rows)}</div>`;
     return html;
+  }
+  function sectorResults(rows) {
+    const s = SECTOR[ui.sector];
+    return best(rows, `${s.name}`) + (list(rows, `혜택 ${rows.length}개 <small>좋은 순</small>`) || '<div class="empty"><div class="big">📭</div><p>이 섹터에 해당하는 혜택이 없어요</p></div>');
   }
 
   // ───────── 화면: 내 카드 ─────────
@@ -429,35 +312,25 @@
     const ids = S.cards.length ? S.cards : CARDS.map((c) => c.id);
     if (!ids.includes(ui.card)) ui.card = ids[0];
     const c = CARD[ui.card];
-    const sp = S.spend[c.id];
-    const lim = tierLimit(c, sp);
-    const tierIdx = sp == null ? -1 : c.tiers.filter(([m]) => sp >= m).length - 1;
+    const lim = E.cardLimit(c.id);
+    const used = E.pooledUsed(c.id);
 
     let html = `<h1 class="page-title">${S.cards.length ? '내 카드' : '카드 둘러보기'}</h1>`;
-    html += `<div class="seg">${ids.map((id) => `<button class="${id === c.id ? 'on' : ''}" data-card="${id}">${esc(CARD[id].short)}</button>`).join('')}</div>`;
+    html += `<div class="seg" role="group" aria-label="카드 선택">${ids.map((id) => `<button class="${id === c.id ? 'on' : ''}" ${pressed(id === c.id)} data-card="${id}">${esc(CARD[id].short)}</button>`).join('')}</div>`;
     html += `
-      <div class="cardart" style="${cardVars(c)}">
-        <div style="display:flex;justify-content:space-between;align-items:flex-start"><span class="brand">${esc(c.short)}</span><span class="nm">CHECK</span></div>
-        <div class="chip-ic"></div>
-        <div class="nm">${esc(c.name)}</div>
+      <div class="cardbar ${c.id === 'kb' ? 'dark-text' : ''}" style="${cardVars(c)}">
+        <div><b>${esc(c.name)}</b><div class="cb-sub">${esc(c.tierLabel)}</div></div>
+        <div class="cb-lim">${lim == null ? '사용액 입력 필요' : lim ? `${won(Math.max(0, lim - used))} 남음` : '구간 미달'}${lim ? `<small>${won(used)} / ${won(lim)}</small>` : ''}</div>
       </div>`;
+    if (lim) {
+      const pct = Math.min(100, Math.round((used / lim) * 100));
+      html += `<div class="meter" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100" aria-label="통합한도 사용률"><div style="width:${pct}%"></div></div>`;
+    }
+    html += remainSection(c);
     html += ledgerSection(c);
-    html += `
-      <div class="section">
-        <div class="kv"><span>지난달 사용액</span>
-          <select class="sel" data-spend="${c.id}">${SPEND_OPTIONS.map(([v, l]) => `<option value="${v}" ${String(sp ?? null) === String(v) ? 'selected' : ''}>${l}</option>`).join('')}</select>
-        </div>
-        <div class="kv"><span>${esc(c.tierLabel)}</span><b>${lim == null ? '사용액을 골라주세요' : lim ? won(lim) : '구간 미달'}</b></div>
-        <div class="tierbar">${c.tiers.map((t, i) => `<div class="${i <= tierIdx ? 'on' : ''}"></div>`).join('')}</div>
-        <div class="tierlbl">${c.tiers.map(([m]) => `<span>${man(m)}</span>`).join('')}</div>
-        <div class="kv" style="margin-top:8px"><span>결제계좌</span><b style="font-size:13px">${esc(c.account)}</b></div>
-        <div class="kv"><span>고객센터</span><b>${esc(c.contact)}</b></div>
-        <p class="hint">💡 ${esc(c.firstUse)}</p>
-        <p class="hint">실적 제외: ${esc(c.excluded)}</p>
-      </div>`;
+    html += cardInfoSection(c);
 
-
-    const rows = BENEFITS.filter((b) => b.card === c.id).map((b) => ({ b, e: evaluate(b, null), x: null }));
+    const rows = BENEFITS.filter((b) => b.card === c.id).map((b) => ({ b, e: E.evaluate(b, null), x: null }));
     const groups = [];
     rows.forEach((r) => {
       let g = groups.find((x) => x.name === r.b.group);
@@ -471,6 +344,91 @@
     return html;
   }
 
+  // 이번 달 쓴 혜택의 남은 한도·횟수
+  function remainSection(c) {
+    const seen = new Set();
+    const rows = [];
+    BENEFITS.filter((b) => b.card === c.id).forEach((b) => {
+      const k = E.keyOf(b);
+      if (seen.has(k)) return;
+      const u = E.usage(k, null);
+      if (!u.mCnt) return;
+      seen.add(k);
+      // 금액 구간별 한도(예: PX 3만원 미만/이상)는 구간마다 따로 표시
+      const bands = (b.lim || []).filter((r) => r.under || r.over);
+      const probes = bands.length ? bands.map((r) => [r.under ? `${man(r.under)} 미만` : `${man(r.over)} 이상`, r.under ? r.under - 1 : r.over]) : [['', null]];
+      const txt = probes.map(([label, amt]) => {
+        const left = E.remaining(b, amt);
+        const v = left.rem === 0 ? `<span class="no-left">${esc(left.why.replace(label, '').trim())}</span>` : isFinite(left.rem) ? won(left.rem) + ' 남음' : '한도 내';
+        return label ? `<div>${esc(label)} · ${v}</div>` : v;
+      }).join('');
+      rows.push(`<div class="kv"><span>${esc(b.title)}<br><small class="muted">이번 달 ${fmtV(u.mSum, unitOf(b))} · ${u.mCnt}회</small></span><b class="remain">${txt}</b></div>`);
+    });
+    if (!rows.length) return '';
+    return `<div class="section"><h2>이번 달 남은 한도</h2>${rows.join('')}</div>`;
+  }
+
+  function ledgerSection(c) {
+    const m = ui.month;
+    const txs = monthTx(m, c.id).sort((a, b) => b.ts - a.ts);
+    const sum = txSums(txs);
+    let html = `<div class="section"><h2>결제 기록
+      <span class="mnav"><button data-lm="-1" aria-label="이전 달">‹</button><span>${m.replace('-', '.')}</span><button data-lm="1" aria-label="다음 달" ${m >= thisMonth() ? 'disabled' : ''}>›</button></span></h2>
+      <div class="kv"><span>기록한 예상 혜택</span><b>${won(sum.won)}${sum.point ? ' · ' + fmtV(sum.point, 'point') : ''}</b></div>`;
+    if (!txs.length) {
+      html += `<p class="hint">${m === thisMonth() ? '검색 화면에서 결제 금액을 넣고 ‘결제 기록’을 누르면 여기 쌓여요. 한도를 다 쓰면 다른 카드를 추천해드려요.' : '이 달에는 기록이 없어요.'}</p>`;
+    }
+    txs.forEach((t) => {
+      const open = ui.txOpen.has(t.id);
+      const d = new Date(t.ts);
+      const names = t.items.map((i) => (BENEFIT[i.b] ? BENEFIT[i.b].title : '삭제된 혜택'));
+      const s = txSums([t]);
+      html += `<div class="led ${open ? 'open' : ''}" role="button" tabindex="0" aria-expanded="${open}" data-tx="${esc(t.id)}">
+        <div class="led-main"><div><b>${esc(names.join(' + '))}</b><div class="muted">${d.getMonth() + 1}.${d.getDate()} · ${won(t.amt)} 결제</div></div>
+          <div class="led-v">−${won(s.won)}${s.point ? `<small>${fmtV(s.point, 'point')}</small>` : ''}</div></div>
+        <div class="led-detail">
+          ${t.items.map((i) => `<div class="kv"><span>${esc(BENEFIT[i.b] ? BENEFIT[i.b].title : i.b)}</span><b>${fmtV(i.v, i.unit)}</b></div>`).join('')}
+          <div class="kv"><span>결제 날짜</span><input type="date" class="sel" data-txdate="${esc(t.id)}" value="${ymd(t.ts)}" max="${ymd(Date.now())}"></div>
+          <button class="btn ghost small" data-cancel="${esc(t.id)}">이 결제 기록 취소</button>
+        </div>
+      </div>`;
+    });
+    return html + '</div>';
+  }
+
+  function spendSelect(id) {
+    const sp = E.spendOf(id);
+    return `<select class="sel" data-spend="${id}" aria-label="${esc(CARD[id].short)} 지난달 사용액">${SPEND_OPTIONS.map(([v, l]) => `<option value="${v}" ${String(sp ?? null) === String(v) ? 'selected' : ''}>${l}</option>`).join('')}</select>`;
+  }
+  function firstSelect(id) {
+    const m = (S.firstUse || {})[id];
+    const cur = !m ? '' : m === thisMonth() ? '0' : m === E.addMonth(thisMonth(), -1) ? '-1' : '';
+    return `<select class="sel" data-first="${id}" aria-label="${esc(CARD[id].short)} 첫 사용 등록 월">
+      <option value="" ${cur === '' ? 'selected' : ''}>해당 없음</option>
+      <option value="0" ${cur === '0' ? 'selected' : ''}>이번 달 등록</option>
+      <option value="-1" ${cur === '-1' ? 'selected' : ''}>지난달 등록</option></select>`;
+  }
+
+  function cardInfoSection(c) {
+    const lim = E.cardLimit(c.id);
+    const sp = E.spendOf(c.id);
+    const tierIdx = sp == null ? -1 : c.tiers.filter(([m]) => sp >= m).length - 1;
+    return `
+      <div class="section">
+        <h2>카드 정보</h2>
+        <div class="kv"><span>지난달 사용액</span>${spendSelect(c.id)}</div>
+        <div class="kv"><span>신규 발급 (첫 사용 등록)</span>${firstSelect(c.id)}</div>
+        <div class="kv"><span>${esc(c.tierLabel)}</span><b>${lim == null ? '사용액을 골라주세요' : lim ? won(lim) : '구간 미달'}${E.firstActive(c.id) ? ' (신규 발급 인정)' : ''}</b></div>
+        <div class="tierbar">${c.tiers.map((t, i) => `<div class="${i <= tierIdx ? 'on' : ''}"></div>`).join('')}</div>
+        <div class="tierlbl">${c.tiers.map(([m]) => `<span>${man(m)}</span>`).join('')}</div>
+        <div class="kv" style="margin-top:8px"><span>결제계좌</span><b style="font-size:13px">${esc(c.account)}</b></div>
+        <div class="kv"><span>고객센터</span><b>${esc(c.contact)}</b></div>
+        <div class="kv"><span>출처</span><b style="font-size:13px"><a href="${esc(c.source.url)}" target="_blank" rel="noopener">${esc(c.source.doc)} (${esc(c.source.date)})</a></b></div>
+        <p class="hint">💡 ${esc(c.firstUse)}</p>
+        <p class="hint">실적 제외: ${esc(c.excluded)}</p>
+      </div>`;
+  }
+
   // ───────── 화면: 설정 ─────────
   function viewSettings() {
     let html = '';
@@ -481,28 +439,38 @@
     }
     html += `<div class="section"><h2>내 나라사랑카드 <small>여러 개 선택</small></h2><div class="pick">`;
     CARDS.forEach((c) => {
-      html += `<button class="pick-card ${owned(c.id) ? 'on' : ''}" data-own="${c.id}" style="${cardVars(c)}"><span class="ck">${owned(c.id) ? '✓' : ''}</span><b>${esc(c.short)}</b><small>${esc(c.name)}</small></button>`;
+      html += `<button class="pick-card ${owned(c.id) ? 'on' : ''}" ${pressed(owned(c.id))} data-own="${c.id}" style="${cardVars(c)}"><span class="ck" aria-hidden="true">${owned(c.id) ? '✓' : ''}</span><b>${esc(c.short)}</b><small>${esc(c.name)}</small></button>`;
     });
     html += `</div></div>`;
 
-    html += `<div class="section"><h2>급여 받는 은행 <small>하나만 선택</small></h2><div class="opts">`;
-    BANKS.forEach((b) => { html += `<button class="opt ${S.salary === b.id ? 'on' : ''}" data-salary="${b.id}">${esc(b.name)}</button>`; });
-    html += `</div><p class="hint">국군재정관리단 급여이체 은행이에요. 하나(Desire·휴대폰케어), IBK(나라·사랑 실적 면제, PX 횟수↑, 급여이체 프로모션), KB(금융수수료 면제) 혜택에 반영돼요.</p></div>`;
+    html += `<div class="section"><h2>내 정보</h2>
+      <div class="switch"><span><b>현역 병사(의무복무) 중인가요?</b><br><span class="muted">현역병 전용 혜택 판정에 써요</span></span>
+        <span class="opts"><button class="opt ${S.soldier === true ? 'on' : ''}" ${pressed(S.soldier === true)} data-soldier="1">네</button><button class="opt ${S.soldier === false ? 'on' : ''}" ${pressed(S.soldier === false)} data-soldier="0">아니요</button></span></div></div>`;
 
-    html += `<div class="section"><h2>적금 든 은행 <small>여러 개 선택</small></h2><div class="opts">`;
-    BANKS.forEach((b) => { html += `<button class="opt ${S.savings.includes(b.id) ? 'on' : ''}" data-saving="${b.id}">${esc(b.name)}</button>`; });
+    html += `<div class="section"><h2>급여 받는 은행 <small>하나만 선택</small></h2><div class="opts" role="group" aria-label="급여 은행">`;
+    BANKS.forEach((b) => { html += `<button class="opt ${S.salary === b.id ? 'on' : ''}" ${pressed(S.salary === b.id)} data-salary="${b.id}">${esc(b.name)}</button>`; });
+    html += `</div><p class="hint">국군재정관리단 급여이체 은행이에요. 하나(Desire·휴대폰케어), IBK(나라·사랑 실적 면제, PX 급여이체자 횟수, 급여이체 프로모션), KB(금융수수료 면제) 혜택에 반영돼요.</p></div>`;
+
+    html += `<div class="section"><h2>적금 든 은행 <small>여러 개 선택</small></h2><div class="opts" role="group" aria-label="적금 은행">`;
+    BANKS.forEach((b) => { html += `<button class="opt ${S.savings.includes(b.id) ? 'on' : ''}" ${pressed(S.savings.includes(b.id))} data-saving="${b.id}">${esc(b.name)}</button>`; });
     html += `</div><p class="hint">장병내일준비적금 가입 은행이에요. IBK 적금이 있으면 IBK PX 할인에서 별도 증빙 없이 현역병으로 인정돼요.</p></div>`;
 
-    const ids = S.cards.length ? S.cards : [];
-    html += `<div class="section"><h2>지난달 카드 사용액 <small>실적 조건 판정용</small></h2>`;
-    if (!ids.length) html += `<p class="muted">카드를 먼저 선택해주세요</p>`;
-    ids.forEach((id) => {
+    if (!S.cards.length || owned('ibk')) {
+      const flags = Object.values(NEEDS).filter((n) => n.flag);
+      html += `<div class="section"><h2>IBK 추가 조건 <small>해당하면 켜기</small></h2>
+        ${flags.map((n) => `<label class="switch"><span>${esc(n.flagLabel)}</span><input type="checkbox" data-check="${esc(n.flag)}" ${S.checks[n.flag] ? 'checked' : ''}></label>`).join('')}
+        <p class="hint">마이태그는 BC카드 앱·홈페이지에서 프로모션별로 등록해요. 등록하지 않으면 쿠폰 혜택은 ‘확인 필요’로 표시돼요.</p></div>`;
+    }
+
+    html += `<div class="section"><h2>카드별 실적 <small>${thisMonth().replace('-', '.')} 기준</small></h2>`;
+    if (!S.cards.length) html += `<p class="muted">카드를 먼저 선택해주세요</p>`;
+    S.cards.forEach((id) => {
       const c = CARD[id];
-      const sp = S.spend[id];
-      html += `<div class="spend-row"><div class="who">${logo(c)}${esc(c.short)}</div>
-        <select class="sel" data-spend="${id}">${SPEND_OPTIONS.map(([v, l]) => `<option value="${v}" ${String(sp ?? null) === String(v) ? 'selected' : ''}>${l}</option>`).join('')}</select></div>`;
+      html += `<div class="spend-row"><div class="who">${logo(c)}${esc(c.short)}</div><div class="spend-sel">
+        <label><small>지난달 사용액</small>${spendSelect(id)}</label>
+        <label><small>신규 발급</small>${firstSelect(id)}</label></div></div>`;
     });
-    html += `<p class="hint">일시불·할부 이용금액 기준 (세금·공과금 등 제외). 매달 초에 한 번 바꿔주세요.</p></div>`;
+    html += `<p class="hint">일시불·할부 이용금액 기준 (세금·공과금 등 제외). 달이 바뀌면 다시 입력해달라고 알려드려요. 첫 사용 등록 월과 다음 달은 신규 발급 실적이 인정돼요.</p></div>`;
 
     html += `<div class="section"><label class="switch"><span><b>없는 카드 혜택도 보기</b><br><span class="muted">다른 카드와 비교할 때 켜세요</span></span><input type="checkbox" id="showAll" ${S.showAll ? 'checked' : ''}></label></div>`;
 
@@ -510,11 +478,16 @@
       html += `<button class="btn" id="done">시작하기</button>`;
     } else {
       html += `
+        <div class="section"><h2>기록 백업</h2>
+          <p class="muted" style="margin:0 0 10px">설정과 결제 기록은 이 기기에만 저장돼요. 기기를 바꾸거나 브라우저 데이터를 지우기 전에 내보내 두세요.</p>
+          <div class="opts"><button class="opt" id="export">내보내기 (.json)</button><button class="opt" id="import">가져오기</button></div>
+          <input type="file" id="importFile" accept="application/json,.json" hidden>
+        </div>
         <div class="section"><h2>홈 화면에 추가하기</h2>
           <p class="muted" style="margin:0">iPhone: Safari 공유 버튼 → ‘홈 화면에 추가’<br>Android: Chrome 메뉴(⋮) → ‘앱 설치’ 또는 ‘홈 화면에 추가’</p>
         </div>
-        <p class="notice">혜택 정보는 각 카드사 상품설명서(${esc(UPDATED)} 기준 정리)를 바탕으로 했어요. 가맹점 업종 분류, 간편결제(PG) 경유, 입점 매장 여부에 따라 적용되지 않을 수 있으니 정확한 내용은 카드사에 확인해주세요.</p>
-        <button class="btn ghost" id="reset">설정 초기화</button>`;
+        <p class="notice">혜택 정보는 각 카드사 상품설명서를 바탕으로 정리했어요 (카드별 출처는 내 카드 화면). 가맹점 업종 분류, 간편결제(PG) 경유, 입점 매장 여부에 따라 적용되지 않을 수 있으니 정확한 내용은 카드사에 확인해주세요.</p>
+        <button class="btn ghost" id="reset">설정 초기화 (기록은 유지)</button>`;
     }
     return html;
   }
@@ -525,28 +498,28 @@
   function render(keepScroll) {
     const y = window.scrollY;
     $('#view').innerHTML = VIEWS[ui.tab]();
-    document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('on', t.dataset.tab === ui.tab));
+    document.querySelectorAll('.tab').forEach((t) => {
+      const on = t.dataset.tab === ui.tab;
+      t.classList.toggle('on', on);
+      if (on) t.setAttribute('aria-current', 'page'); else t.removeAttribute('aria-current');
+    });
     fitAmount();
     if (keepScroll) window.scrollTo(0, y); else window.scrollTo(0, 0);
   }
 
-  // 검색 입력은 입력창을 다시 그리지 않고 결과만 갱신 (IME 조합 유지)
+  // 입력창은 다시 그리지 않고 결과만 갱신 (IME 조합·포커스 유지)
   function refreshResults() {
     const res = $('#results');
     if (ui.tab === 'home') {
       if (!ui.q.trim() || !res) { render(true); focusEnd('#q'); return; }
-      const rows = ranked(search(ui.q));
-      const card = $('.amt-card');
-      if (rows.length && !card) { render(true); focusEnd('#q'); return; }
-      if (card) {
-        card.hidden = !rows.length;
-        $('.amt-label').textContent = `‘${ui.q.trim()}’에서 얼마 결제하나요?`;
-      }
+      const rows = ranked(E.search(ui.q));
+      const slot = $('.amt-slot');
+      slot.hidden = !rows.length;
+      $('.amt-label').textContent = `‘${ui.q.trim()}’에서 얼마 결제하나요?`;
       res.innerHTML = resultsHTML(rows);
       $('.search').classList.toggle('has-value', !!ui.q);
     } else if (ui.tab === 'sector' && res) {
-      const rows = ranked(BENEFITS.filter((b) => b.sector === ui.sector));
-      res.innerHTML = best(rows, `${SECTOR[ui.sector].name}에서`) + list(rows, `혜택 ${rows.length}개 <small>좋은 순</small>`);
+      res.innerHTML = sectorResults(ranked(BENEFITS.filter((b) => b.sector === ui.sector)));
     }
   }
 
@@ -578,65 +551,112 @@
 
   function go(tab) { ui.tab = tab; render(); }
 
+  // 결제 한 건 = 거래 하나 (기본 + 중복 혜택을 묶어서 저장)
   function confirmPay(id) {
     const b = BENEFIT[id];
-    const x = b && estimate(b, ui.amount);
+    const x = b && E.estimate(b, ui.amount);
     if (!x || !(x.v > 0)) return;
     const c = CARD[b.card];
-    const now = Date.now();
-    const rec = (bb, v, n) => LEDGER.push({
-      id: now + n, ts: now, b: bb.id, k: bb.limKey || bb.id, card: bb.card,
-      title: bb.title, amt: ui.amount, v, pooled: !!(bb.req && bb.req.pooled),
-    });
-    rec(b, x.v - (x.extra ? x.extra.v : 0), 0);
-    if (x.extra) rec(x.extra.b, x.extra.v, 1);
-    saveLedger();
-    const left = remaining(b, ui.amount);
+    const ts = Date.now();
+    const items = [];
+    const base = x.v - (x.extra ? x.extra.v : 0);
+    if (base > 0) items.push({ b: b.id, k: E.keyOf(b), v: base, pooled: !!(b.req && b.req.pooled), unit: x.unit });
+    if (x.extra) items.push({ b: x.extra.b.id, k: E.keyOf(x.extra.b), v: x.extra.v, pooled: !!(x.extra.b.req && x.extra.b.req.pooled), unit: unitOf(x.extra.b) });
+    const tx = { id: 't' + ts + '-' + Math.random().toString(36).slice(2, 7), ts, card: b.card, amt: ui.amount, items };
+    LEDGER.push(tx);
+    if (!saveLedger()) {
+      LEDGER.pop();
+      toast('⚠️ 기록을 저장하지 못했어요. 저장공간·개인정보 보호 모드를 확인한 뒤 다시 시도해주세요');
+      return;
+    }
+    const left = E.remaining(b, ui.amount);
     ui.amount = 0;
     render(true);
-    toast(`${c.short} ${won(x.v)} 혜택 기록${left.rem === 0 ? ` · ${left.why}` : isFinite(left.rem) ? ` · 남은 한도 ${won(left.rem)}` : ''}`);
+    toast(`${c.short} ${fmtV(x.v, x.unit)} 예상 혜택을 기록했어요${left.rem === 0 ? ` · ${left.why}` : isFinite(left.rem) ? ` · 남은 한도 ${won(left.rem)}` : ''}`);
+  }
+
+  function cancelTx(id) {
+    const t = LEDGER.find((x) => x.id === id);
+    if (!t || !confirm(`${won(t.amt)} 결제 기록을 취소할까요?\n함께 기록된 혜택 ${t.items.length}개가 모두 되돌려져요.`)) return;
+    const prev = LEDGER;
+    LEDGER = LEDGER.filter((x) => x !== t);
+    if (!saveLedger()) { LEDGER = prev; toast('⚠️ 취소를 저장하지 못했어요'); return; }
+    ui.txOpen.delete(id);
+    render(true);
+    toast('결제 기록을 취소했어요');
+  }
+
+  function exportData() {
+    const blob = new Blob([JSON.stringify({ app: 'narasarang', v: 2, exportedAt: new Date().toISOString(), settings: S, ledger: LEDGER }, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `narasarang-backup-${ymd(Date.now())}.json`;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+  }
+
+  function importData(file) {
+    const r = new FileReader();
+    r.onload = () => {
+      let d;
+      try { d = JSON.parse(r.result); } catch (e) { toast('⚠️ 백업 파일을 읽지 못했어요'); return; }
+      if (!d || d.app !== 'narasarang' || !d.settings || !Array.isArray(d.ledger)) { toast('⚠️ 나라사랑 혜택 백업 파일이 아니에요'); return; }
+      const tx = d.ledger.map((t) => Object.assign({}, t, { items: (t.items || []).map((i) => Object.assign({}, i, { b: fixId(i.b), k: fixId(i.k) })) })).filter(isTx);
+      if (!confirm(`설정과 결제 기록 ${tx.length}건으로 바꿀까요? 지금 기록은 덮어써져요.`)) return;
+      const prevS = S; const prevL = LEDGER;
+      S = Object.assign(defaults(), d.settings, { onboarded: true });
+      LEDGER = tx;
+      if (!store(KEY, S) || !saveLedger()) { S = prevS; LEDGER = prevL; toast('⚠️ 가져온 내용을 저장하지 못했어요'); return; }
+      render(true);
+      toast(`결제 기록 ${tx.length}건을 가져왔어요`);
+    };
+    r.readAsText(file);
   }
 
   document.addEventListener('click', (ev) => {
-    const t = ev.target.closest('button, [data-id]');
-    if (!t) return;
+    const t = ev.target.closest('button, [data-id], [data-tx]');
+    if (!t || t.disabled) return;
+    if (ev.target.closest('a, input, select')) return;
     const d = t.dataset;
     if (d.confirm) { confirmPay(d.confirm); return; }
-    if (d.del) {
-      const e = LEDGER.find((x) => String(x.id) === d.del);
-      if (e && confirm(`${won(e.amt)} 결제 기록을 지울까요?`)) { LEDGER = LEDGER.filter((x) => x !== e); saveLedger(); render(true); }
-      return;
-    }
-    if (d.goto) { ui.card = d.card; go(d.goto); return; }
-    if (d.tab) { if (d.tab === ui.tab && ui.tab === 'home') { ui.q = ''; } go(d.tab); return; }
-    if (d.go) { go(d.go); return; }
-    if (d.q) { ui.q = d.q; render(); $('#amt') && $('#amt').focus(); return; }
+    if (d.cancel) { cancelTx(d.cancel); return; }
+    if (d.flag) { S.checks[d.flag] = true; saveS(); render(true); return; }
+    if (d.soldier) { S.soldier = d.soldier === '1'; saveS(); render(true); return; }
+    if (d.lm) { ui.month = E.addMonth(ui.month, Number(d.lm)); render(true); return; }
     if (d.add !== undefined) {
       const n = Number(d.add);
       setAmount(n ? ui.amount + n : 0);
       if (!n) $('#amt').focus();
       return;
     }
+    if (d.goto) { ui.card = d.card; go(d.goto); return; }
+    if (d.tab) { if (d.tab === ui.tab && ui.tab === 'home') { ui.q = ''; } go(d.tab); return; }
+    if (d.go) { go(d.go); return; }
+    if (d.q) { ui.q = d.q; render(); if ($('#amt')) $('#amt').focus(); return; }
     if (d.sector) { ui.sector = d.sector; ui.tab = 'sector'; render(); return; }
     if (d.card) { ui.card = d.card; render(true); return; }
-    if (d.id) { ui.open.has(d.id) ? ui.open.delete(d.id) : ui.open.add(d.id); t.classList.toggle('open'); return; }
+    if (d.tx) { const o = ui.txOpen; o.has(d.tx) ? o.delete(d.tx) : o.add(d.tx); t.classList.toggle('open'); t.setAttribute('aria-expanded', o.has(d.tx)); return; }
+    if (d.id) { const o = ui.open; o.has(d.id) ? o.delete(d.id) : o.add(d.id); t.classList.toggle('open'); t.setAttribute('aria-expanded', o.has(d.id)); return; }
     if (d.own) {
       S.cards = owned(d.own) ? S.cards.filter((x) => x !== d.own) : CARDS.map((c) => c.id).filter((id) => id === d.own || owned(id));
-      save(); render(true); return;
+      saveS(); render(true); return;
     }
-    if (d.salary) { S.salary = S.salary === d.salary ? null : d.salary; save(); render(true); return; }
+    if (d.salary) { S.salary = S.salary === d.salary ? null : d.salary; saveS(); render(true); return; }
     if (d.saving) {
       S.savings = S.savings.includes(d.saving) ? S.savings.filter((x) => x !== d.saving) : [...S.savings, d.saving];
-      save(); render(true); return;
+      saveS(); render(true); return;
     }
     if (t.id === 'clear') { ui.q = ''; ui.amount = 0; render(); focusEnd('#q'); return; }
+    if (t.id === 'export') { exportData(); return; }
+    if (t.id === 'import') { $('#importFile').click(); return; }
     if (t.id === 'done') {
-      S.onboarded = true; save(); go('home');
+      S.onboarded = true; saveS(); go('home');
       toast(S.cards.length ? '맞춤 혜택을 준비했어요' : '카드는 나중에 설정에서 고를 수 있어요');
       return;
     }
     if (t.id === 'reset') {
-      if (confirm('설정을 모두 지울까요?')) { S = defaults(); save(); ui.tab = 'settings'; render(); }
+      if (confirm('설정을 모두 지울까요? 결제 기록은 남아요.')) { S = defaults(); saveS(); ui.tab = 'settings'; render(); }
     }
   });
 
@@ -648,28 +668,47 @@
 
   document.addEventListener('change', (ev) => {
     const el = ev.target;
-    if (el.dataset.spend) {
+    const d = el.dataset;
+    if (d.spend) {
       const v = el.value === 'null' ? null : Number(el.value);
-      if (v == null) delete S.spend[el.dataset.spend]; else S.spend[el.dataset.spend] = v;
-      save(); render(true);
+      if (v == null) { delete S.spend[d.spend]; delete S.spendAt[d.spend]; } else { S.spend[d.spend] = v; S.spendAt[d.spend] = thisMonth(); }
+      saveS(); render(true);
     }
-    if (el.id === 'showAll') { S.showAll = el.checked; save(); }
+    if (d.first !== undefined) {
+      if (el.value === '') delete S.firstUse[d.first]; else S.firstUse[d.first] = E.addMonth(thisMonth(), Number(el.value));
+      saveS(); render(true);
+    }
+    if (d.check) { if (el.checked) S.checks[d.check] = true; else delete S.checks[d.check]; saveS(); }
+    if (d.txdate) {
+      const t = LEDGER.find((x) => x.id === d.txdate);
+      if (!t || !el.value) return;
+      const old = t.ts;
+      const [y, m, dd] = el.value.split('-').map(Number);
+      const nd = new Date(t.ts); nd.setFullYear(y, m - 1, dd);
+      if (nd.getTime() > Date.now()) { el.value = ymd(old); toast('미래 날짜로는 바꿀 수 없어요'); return; }
+      t.ts = nd.getTime();
+      if (!saveLedger()) { t.ts = old; toast('⚠️ 날짜를 저장하지 못했어요'); }
+      render(true);
+    }
+    if (el.id === 'showAll') { S.showAll = el.checked; saveS(); }
+    if (el.id === 'importFile' && el.files[0]) { importData(el.files[0]); el.value = ''; }
   });
 
   document.addEventListener('keydown', (ev) => {
-    if (ev.target.id === 'q' && ev.key === 'Enter') { const a = $('#amt'); a ? a.focus() : ev.target.blur(); }
+    if (ev.target.id === 'q' && ev.key === 'Enter') { const a = $('#amt'); if (a && !$('.amt-slot').hidden) a.focus(); else ev.target.blur(); }
     if (ev.target.id === 'amt' && ev.key === 'Enter') ev.target.blur();
-    if ((ev.key === 'Enter' || ev.key === ' ') && ev.target.dataset && ev.target.dataset.id) { ev.preventDefault(); ev.target.click(); }
+    const ds = ev.target.dataset || {};
+    if ((ev.key === 'Enter' || ev.key === ' ') && (ds.id || ds.tx) && ev.target.getAttribute('role') === 'button') { ev.preventDefault(); ev.target.click(); }
   });
 
   let toastTimer;
   function toast(msg) {
     let el = $('.toast');
-    if (!el) { el = document.createElement('div'); el.className = 'toast'; document.body.appendChild(el); }
+    if (!el) { el = document.createElement('div'); el.className = 'toast'; el.setAttribute('role', 'status'); document.body.appendChild(el); }
     el.textContent = msg;
     el.hidden = false;
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => { el.hidden = true; }, 2200);
+    toastTimer = setTimeout(() => { el.hidden = true; }, 2600);
   }
 
   render();
