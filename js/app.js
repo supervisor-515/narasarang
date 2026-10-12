@@ -471,6 +471,8 @@
   }
 
   // ───────── 화면: 설정 ─────────
+  // 홈 화면 앱·플레이스토어 앱으로 실행 중이면 설치 안내를 숨김
+  const installed = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
   function viewSettings() {
     let html = '';
     if (!S.onboarded) {
@@ -533,12 +535,13 @@
           <div class="opts"><button class="opt" id="export">내보내기 (.json)</button><button class="opt" id="import">가져오기</button></div>
           <input type="file" id="importFile" accept="application/json,.json" hidden>
         </div>
-        <div class="section"><h2>홈 화면에 추가하기</h2>
+        ${installed ? '' : `<div class="section"><h2>홈 화면에 추가하기</h2>
           <p class="muted" style="margin:0">iPhone: Safari 공유 버튼 → ‘홈 화면에 추가’<br>Android: Chrome 메뉴(⋮) → ‘앱 설치’ 또는 ‘홈 화면에 추가’</p>
-        </div>
+        </div>`}
         <p class="notice">혜택 정보는 각 카드사 상품설명서를 바탕으로 정리했어요 (카드별 출처는 내 카드 화면). 가맹점 업종 분류, 간편결제(PG) 경유, 입점 매장 여부에 따라 적용되지 않을 수 있으니 정확한 내용은 카드사에 확인해주세요.</p>
         <button class="btn ghost" id="reset">설정 초기화 (기록은 유지)</button>`;
     }
+    html += `<p class="notice app-info">비공식 앱이에요. 국방부·카드사와 관련이 없어요.<br><a href="privacy.html" target="_blank" rel="noopener">개인정보처리방침</a></p>`;
     return html;
   }
 
