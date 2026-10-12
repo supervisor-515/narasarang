@@ -35,7 +35,8 @@ python3 -m http.server 8000   # http://localhost:8000
 | `css/style.css` | 스타일 (라이트/다크 모드) |
 | `sw.js` | 오프라인 캐시 — **앱 파일을 수정하면 `VERSION` 값을 올려야** 설치된 앱이 갱신됨 |
 | `manifest.webmanifest` | PWA 설정 |
-| `icons/` | 앱 아이콘 (현재는 임시 아이콘) |
+| `icons/` | 앱 아이콘 |
+| `store/` | 플레이스토어 등록용 아이콘(`play-icon-512.png`)과 아이콘 원본(`icon-master-1024.png`). 앱에서는 쓰지 않음 |
 
 ## 아이콘 교체
 
@@ -49,7 +50,9 @@ python3 -m http.server 8000   # http://localhost:8000
 | `apple-touch-icon.png` | 180×180 | iPhone 홈 화면. **투명 불가**(배경 꽉 채움), 모서리는 iOS가 자동으로 둥글게 처리하니 직각으로 |
 | `favicon-32.png` | 32×32 | 브라우저 탭 |
 
-교체 후 `sw.js`의 `VERSION`을 올려주세요.
+교체 후 `sw.js`의 `VERSION`을 올려주세요. 모든 크기는 `store/icon-master-1024.png` 한 장에서 줄여 만듭니다. 배경색은 `#1850A8`.
+
+플레이스토어 고해상도 아이콘은 `store/play-icon-512.png`(512×512, 32비트 PNG, 배경 꽉 채움)를 올립니다. 모서리와 그림자는 스토어가 자동으로 넣습니다.
 
 ## 데이터 출처
 
