@@ -36,7 +36,7 @@ python3 -m http.server 8000   # http://localhost:8000
 | `sw.js` | 오프라인 캐시 — **앱 파일을 수정하면 `VERSION` 값을 올려야** 설치된 앱이 갱신됨 |
 | `manifest.webmanifest` | PWA 설정 |
 | `icons/` | 앱 아이콘 |
-| `store/` | 플레이스토어 등록용 아이콘(`play-icon-512.png`)과 아이콘 원본(`icon-master-1024.png`). 앱에서는 쓰지 않음 |
+| `store/` | 플레이스토어 등록 자료: 아이콘(`play-icon-512.png`), 그래픽 이미지(`feature-graphic-1024x500.png`), 스크린샷 4장(1080×1920), 아이콘 원본. 앱에서는 쓰지 않음 |
 
 ## 아이콘 교체
 
