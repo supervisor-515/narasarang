@@ -338,3 +338,26 @@ input[type="search"]::-webkit-search-cancel-button { -webkit-appearance: none; d
 .px-home { padding: 6px 4px 10px; }
 .px-title { font-size: 22px; font-weight: 800; letter-spacing: -0.03em; }
 .px-sub { margin: 4px 0 0; color: var(--text-3); font-size: 13.5px; }
+
+/* ── 남은 한도 게이지 ── */
+.lim-card { border-top: 1px solid var(--line); padding: 14px 0 4px; }
+.lim-card:first-of-type { border-top: 0; padding-top: 2px; }
+.lim-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; margin-bottom: 10px; }
+.lim-head b { font-size: 15.5px; font-weight: 700; }
+.lim-head span { font-size: 12.5px; color: var(--text-3); white-space: nowrap; }
+.lim-group + .lim-group { margin-top: 12px; }
+.lim-label { font-size: 13px; font-weight: 700; color: var(--text-2); margin-bottom: 6px; display: flex; align-items: center; gap: 6px; }
+.lim-rate { font-size: 11.5px; font-weight: 700; color: var(--accent); background: var(--accent-soft); border-radius: 6px; padding: 1px 6px; }
+.g-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; }
+.g { --tone: var(--accent); background: var(--surface-2); border-radius: 14px; padding: 12px 12px 10px; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.g.low { --tone: var(--warn); }
+.g.out { --tone: var(--no); }
+.g-k { font-size: 12px; color: var(--text-3); font-weight: 600; }
+.g-left { font-size: 18px; font-weight: 800; letter-spacing: -0.02em; color: var(--tone); }
+.g.ok .g-left { color: var(--text); }
+.g-bar { height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; margin: 2px 0; }
+.g-bar div { height: 100%; border-radius: 3px; background: var(--tone); transition: width .3s; }
+.g-sub { font-size: 11.5px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.pips { display: flex; gap: 4px; flex-wrap: wrap; margin: 3px 0; }
+.pips i { width: 10px; height: 10px; border-radius: 50%; background: var(--line); }
+.pips i.on { background: var(--tone); }

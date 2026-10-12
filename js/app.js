@@ -357,32 +357,48 @@
     return html;
   }
 
-  // 이번 달 쓴 혜택의 남은 한도·횟수
+  // 이번 달 쓴 혜택의 남은 한도·횟수 — 게이지 카드
+  const KIND = {
+    month: '이번 달 남음', day: '오늘 남음', year: '올해 남음',
+    monthCount: '이번 달 횟수', dayCount: '오늘 횟수', quarterCount: '이번 분기 횟수', yearCount: '올해 횟수',
+  };
+  function gauge(it, unit) {
+    const left = Math.max(0, it.limit - it.used);
+    const pct = it.limit ? Math.min(100, (it.used / it.limit) * 100) : 100;
+    const tone = left === 0 ? 'out' : left / it.limit <= 0.3 ? 'low' : 'ok';
+    const fmt = (v) => (unit === 'point' ? v.toLocaleString('ko-KR') + 'P' : won(v));
+    if (it.kind.endsWith('Count')) {
+      // 횟수는 점으로: 쓴 만큼 채워짐 (10회 넘으면 숫자만)
+      const pips = it.limit <= 10 ? `<span class="pips" aria-hidden="true">${Array.from({ length: it.limit }, (_, i) => `<i class="${i < it.used ? 'on' : ''}"></i>`).join('')}</span>` : '';
+      return `<div class="g g-count ${tone}"><span class="g-k">${KIND[it.kind]}</span>
+        <b class="g-left">${left ? `${left}회 남음` : '모두 사용'}</b>${pips}<span class="g-sub">${it.used} / ${it.limit}회 사용</span></div>`;
+    }
+    return `<div class="g ${tone}"><span class="g-k">${KIND[it.kind]}</span><b class="g-left">${left ? fmt(left) : '소진'}</b>
+      <div class="g-bar" role="progressbar" aria-label="${KIND[it.kind]} 사용률" aria-valuenow="${Math.round(pct)}" aria-valuemin="0" aria-valuemax="100"><div style="width:${pct}%"></div></div>
+      <span class="g-sub">${fmt(it.used)} / ${fmt(it.limit)}</span></div>`;
+  }
   function remainSection(c) {
     const seen = new Set();
-    const rows = [];
+    const cards = [];
     BENEFITS.filter((b) => b.card === c.id).forEach((b) => {
       const k = E.keyOf(b);
       if (seen.has(k)) return;
       const u = E.usage(k, null);
       if (!u.mCnt) return;
       seen.add(k);
-      // 금액 구간별 한도(예: PX 3만원 미만/이상)는 구간마다 따로 표시
-      const bands = (b.lim || []).filter((r) => r.under || r.over);
-      const probes = bands.length ? bands.map((r) => [r.under ? `${man(r.under)} 미만` : `${man(r.over)} 이상`, r.under ? r.under - 1 : r.over]) : [['', null]];
-      const txt = probes.map(([label, amt]) => {
-        const left = E.remaining(b, amt);
-        // 일 한도가 월 한도보다 먼저 걸리면 오늘·이번 달을 나눠서 표시
-        const split = left.rem > 0 && isFinite(left.dRem) && isFinite(left.mRem) && left.dRem < left.mRem;
-        const v = left.rem === 0 ? `<span class="no-left">${esc(left.why.replace(label, '').trim())}</span>`
-          : split ? `오늘 ${won(left.dRem)} · 이번 달 ${won(left.mRem)} 남음`
-            : isFinite(left.rem) ? won(left.rem) + ' 남음' : '한도 내';
-        return label ? `<div>${esc(label)} · ${v}</div>` : v;
-      }).join('');
-      rows.push(`<div class="kv"><span>${esc(b.title)}<br><small class="muted">이번 달 ${fmtV(u.mSum, unitOf(b))} · ${u.mCnt}회</small></span><b class="remain">${txt}</b></div>`);
+      const groups = E.limitBreakdown(b);
+      if (!groups.length) return;
+      const unit = unitOf(b);
+      cards.push(`<div class="lim-card">
+        <div class="lim-head"><b>${esc(b.title)}</b><span>이번 달 ${unit === 'use' ? '' : fmtV(u.mSum, unit) + ' · '}${u.mCnt}회</span></div>
+        ${groups.map((g) => `<div class="lim-group">
+          ${g.label ? `<div class="lim-label">${esc(g.label)}${g.rate ? `<span class="lim-rate">${esc(g.rate)}</span>` : ''}</div>` : ''}
+          <div class="g-grid">${g.items.map((it) => gauge(it, unit)).join('')}</div>
+        </div>`).join('')}
+      </div>`);
     });
-    if (!rows.length) return '';
-    return `<div class="section"><h2>남은 한도</h2>${rows.join('')}</div>`;
+    if (!cards.length) return '';
+    return `<div class="section"><h2>남은 한도 <small>이번 달 사용 기준</small></h2>${cards.join('')}</div>`;
   }
 
   function ledgerSection(c) {

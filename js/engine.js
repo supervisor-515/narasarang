@@ -183,6 +183,34 @@
       return { rem, why, mRem, dRem };
     }
 
+    // 화면용: 한도 규칙별 사용량·한도 (금액 구간마다 묶음)
+    function limitBreakdown(b) {
+      const t = now();
+      const groups = [];
+      (b.lim || []).forEach((r) => {
+        if (!dayOk(r, t)) return;
+        const banded = r.under || r.over;
+        const u = usage(keyOf(b), banded || r.days || r.notDays ? r : null);
+        const items = [];
+        const add = (kind, lim, used) => { const L = resolve(lim); if (L != null && isFinite(L)) items.push({ kind, limit: L, used }); };
+        add('month', r.month, u.mSum); add('day', r.day, u.dSum); add('year', r.year, u.ySum);
+        add('monthCount', r.monthCount, u.mCnt); add('dayCount', r.dayCount, u.dCnt);
+        add('quarterCount', r.quarterCount, u.qCnt); add('yearCount', r.yearCount, u.yCnt);
+        if (!items.length) return;
+        // 구간의 할인율 범위 (예: 3만원 이상 10~30%)
+        let rate = '';
+        const tiers = (b.calc && b.calc.tiers) || [];
+        if (banded && tiers.length) {
+          const lo = r.under ? 0 : r.over;
+          const hi = r.under ? r.under : Infinity;
+          const rs = tiers.filter(([m], i) => m < hi && (tiers[i + 1] ? tiers[i + 1][0] > lo : true)).map(([, p]) => p);
+          if (rs.length) rate = Math.min(...rs) === Math.max(...rs) ? `${rs[0]}%` : `${Math.min(...rs)}~${Math.max(...rs)}%`;
+        }
+        groups.push({ label: r.under ? `${man(r.under)} 미만` : r.over ? `${man(r.over)} 이상` : '', rate, items });
+      });
+      return groups;
+    }
+
     // ───── 자격 조건 ─────
     function needStatus(key) {
       const s = S();
@@ -353,7 +381,7 @@
       CARD, SECTOR, BANK, BENEFIT, NEEDS, TICKET_PRICE,
       ymd, thisMonth, addMonth, won, man, norm,
       spendOf, spendStale, firstActive, cardLimit, pooledUsed, usage, remaining,
-      needStatus, evaluate, estimate, search, rank, bestOf, keyOf, effective,
+      needStatus, evaluate, estimate, search, rank, bestOf, keyOf, effective, limitBreakdown,
     };
   }
 
