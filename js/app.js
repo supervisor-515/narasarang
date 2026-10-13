@@ -33,7 +33,7 @@
   let LEDGER = [];
   const input = { tickets: 1 };
   const E = window.Engine.create(DATA, { getS: () => S, getLedger: () => LEDGER, getInput: () => input });
-  const { CARD, SECTOR, BANK, BENEFIT, NEEDS, won, man, ymd, thisMonth, unitOf } = E;
+  const { CARD, SECTOR, BANK, BENEFIT, NEEDS, won, man, ymd, thisMonth } = E;
 
   // 예전 설정: 사용액 입력 월이 없으면 이번 달로 간주
   Object.keys(S.spend).forEach((id) => { if (!S.spendAt[id]) S.spendAt[id] = thisMonth(); });
@@ -48,6 +48,7 @@
   // { id, ts, card, amt, items: [{ b, k, v, pooled, unit }] } — 한 번의 결제에 기본·추가 혜택을 묶음
   const isTx = (t) => window.Engine.isTx(DATA, t);
   const fixId = (x) => LEGACY_IDS[x] || x;
+  const unitOf = (b) => (b && (b.type === '적립' || (b.calc && b.calc.steps)) ? 'point' : 'won');
 
   function loadLedger() {
     const cut = Date.now() - 400 * 864e5; // 연 횟수 계산용으로 13개월치 보관
@@ -74,7 +75,6 @@
   const ui = {
     tab: S.onboarded ? 'home' : 'settings', q: '', amount: 0, sector: 'px', card: null,
     open: new Set(), txOpen: new Set(), month: thisMonth(),
-    split: false, // PX: 한 번에 결제 / 카드 나눠서 결제
   };
 
   // ───────── 유틸 ─────────
@@ -211,10 +211,10 @@
   }
 
   // 토스 송금처럼 큰 숫자 + 빠른 금액 버튼
-  function amountCard(where, ask = '얼마 결제하나요?') {
+  function amountCard(where) {
     return `
       <div class="amt-card">
-        <label for="amt" class="amt-label">${esc(where)} ${esc(ask)}</label>
+        <label for="amt" class="amt-label">${esc(where)} 얼마 결제하나요?</label>
         <div class="amt-field">
           <input id="amt" inputmode="numeric" pattern="[0-9]*" enterkeyhint="done" autocomplete="off" placeholder="금액 입력" value="${ui.amount ? ui.amount.toLocaleString('ko-KR') : ''}">
           <span class="amt-won ${ui.amount ? '' : 'off'}">원</span>
@@ -248,8 +248,7 @@
         <p class="px-sub">${S.cards.length ? `내 카드 ${S.cards.map((id) => CARD[id].short).join('·')} · 급여 ${esc(salary)}` : '설정에서 내 카드를 고르면 맞춤으로 보여드려요'}</p>
       </div>`;
     html += amountCard('PX에서');
-    html += `<div class="seg" role="group" aria-label="결제 방식">${[[false, '한 번에 결제'], [true, '카드 나눠서 결제']].map(([v, l]) => `<button class="${ui.split === v ? 'on' : ''}" ${pressed(ui.split === v)} data-split="${v ? 1 : 0}">${l}</button>`).join('')}</div>`;
-    html += `<div id="results">${ui.split ? planResults() : pxResults()}</div>`;
+    html += `<div id="results">${pxResults()}</div>`;
     if (!S.cards.length) {
       html += `<div class="section cta"><div><b>내 나라사랑카드를 골라주세요</b><div class="muted">지금은 4개 카드 혜택을 모두 보여줘요</div></div><button data-go="settings">설정</button></div>`;
     }
@@ -319,63 +318,6 @@
   function sectorResults(rows) {
     const s = SECTOR[ui.sector];
     return best(rows, `${s.name}`) + (list(rows, `혜택 ${rows.length}개 <small>좋은 순</small>`) || '<div class="empty"><div class="big">📭</div><p>이 섹터에 해당하는 혜택이 없어요</p></div>');
-  }
-
-  // ───────── PX 카드 나눠서 결제 ─────────
-  // 같은 금액을 여러 번(카드)으로 나눠 낼 때 가장 많이 아끼는 조합을 카드 하나로 낼 때와 비교
-  const pxBenefits = () => BENEFITS.filter((b) => b.sector === 'px' && visibleCards().includes(b.card));
-  function planResults() {
-    if (!ui.amount) return '<div class="empty"><div class="big">🧮</div><p>쓸 금액을 넣으면 카드를 어떻게 나눠 낼지 알려드려요</p></div>';
-    const found = pxBenefits();
-    const p = E.plan(found, ui.amount);
-    const pays = p.pays.filter((x) => x.b);
-    const left = found.filter((b) => b.calc && !b.addon && E.evaluate(b, null).status === 'check').length;
-    let html = `<div class="section plan">
-      <div class="plan-sum">
-        <div><span class="muted">${p.pays.length > 1 ? `${p.pays.length}번 나눠 내면` : '이렇게 내면'}</span><b>${won(p.saved)} 아껴요</b></div>
-        ${p.gain > 0 ? `<span class="pill ok">한 번에 낼 때보다 ${won(p.gain)} 더</span>` : ''}
-      </div>
-      <ol class="plan-steps">${p.pays.map((x, i) => planStep(x, i)).join('')}</ol>
-      ${p.gain > 0 && p.single.b ? `<p class="hint">한 번에 낼 때 최선: ${esc(CARD[p.single.b.card].short)} ${esc(p.single.b.title)} · ${won(p.single.w)}</p>` : ''}
-      ${p.pays.length > 1 ? '<p class="hint">계산대에서 금액을 나눠 결제하거나 물건을 나눠 사면 돼요. 결제마다 따로 할인되고, 이 순서대로 내면 한도가 위처럼 차감돼요.</p>' : '<p class="hint">나눠 내도 더 아낄 수 없어서 한 번에 내는 게 좋아요.</p>'}
-      ${!pays.length ? `<p class="hint">지금 조건으로 받을 수 있는 혜택이 없어요</p>` : ''}
-      ${left ? `<p class="hint">조건 확인이 필요한 혜택 ${left}개는 계산에서 뺐어요 · <button class="link" data-go="settings">설정에서 입력</button></p>` : ''}
-      ${pays.length ? '<button class="confirm" id="planDone">이대로 결제했어요 · 모두 기록</button>' : ''}
-    </div>`;
-    html += '<p class="hint" style="margin:0 4px 12px">지금까지 기록한 결제의 남은 한도·횟수를 반영한 예상이에요. 할인율이 바뀌는 금액(예: 3만원) 바로 아래로 맞추면 유리해요.</p>';
-    return html;
-  }
-
-  function planStep(x, i) {
-    if (!x.b) return `<li class="plan-step"><span class="no">${i + 1}</span><div class="body"><div class="title">${won(x.amt)} · 아무 카드</div><div class="where">혜택 없는 나머지 금액</div></div><div class="val"><b class="zero">0원</b></div></li>`;
-    const c = CARD[x.b.card];
-    const ctx = x.b.ctx || [];
-    return `<li class="plan-step"><span class="no">${i + 1}</span>${logo(c)}
-      <div class="body">
-        <div class="title">${esc(c.short)}로 ${won(x.amt)}</div>
-        <div class="where">${esc(x.b.title)}${x.x.extra ? ` + ${esc(x.x.extra.b.title)}` : ''}</div>
-        ${ctx.length ? `<div class="where warn-text">결제 전 확인 · ${ctx.map(esc).join(' · ')}</div>` : ''}
-        ${x.x.partial ? '<div class="where warn-text">남은 한도까지만 적용</div>' : ''}
-      </div>
-      <div class="val"><b class="est">${x.x.unit === 'point' ? fmtV(x.x.v, 'point') : '−' + won(x.x.v)}</b></div></li>`;
-  }
-
-  // 계획대로 결제했으면 결제마다 기록 (순서대로 한도 차감)
-  function confirmPlan() {
-    const p = E.plan(pxBenefits(), ui.amount);
-    const pays = p ? p.pays.filter((x) => x.b) : [];
-    if (!pays.length) return;
-    const ts = Date.now();
-    const added = pays.map((x, i) => ({ id: 't' + (ts + i) + '-' + Math.random().toString(36).slice(2, 7), ts: ts + i, card: x.b.card, amt: x.amt, items: E.txItems(x.b, x.x) }));
-    LEDGER.push(...added);
-    if (!saveLedger()) {
-      LEDGER.splice(LEDGER.length - added.length, added.length);
-      toast('⚠️ 기록을 저장하지 못했어요. 저장공간·개인정보 보호 모드를 확인한 뒤 다시 시도해주세요');
-      return;
-    }
-    ui.amount = 0;
-    render(true);
-    toast(`결제 ${added.length}건 · ${won(p.saved)} 예상 혜택을 기록했어요`);
   }
 
   // ───────── 화면: 내 카드 ─────────
@@ -626,7 +568,7 @@
     if (ui.tab === 'home') {
       const pxHome = !!$('.px-home');
       if (!ui.q.trim()) {
-        if (pxHome && res) { res.innerHTML = ui.split ? planResults() : pxResults(); return; }
+        if (pxHome && res) { res.innerHTML = pxResults(); return; }
         render(true); focusEnd('#q'); return;
       }
       if (pxHome || !res) { render(true); focusEnd('#q'); return; }
@@ -683,7 +625,11 @@
     if (!x || !(x.v > 0)) return;
     const c = CARD[b.card];
     const ts = Date.now();
-    const tx = { id: 't' + ts + '-' + Math.random().toString(36).slice(2, 7), ts, card: b.card, amt: ui.amount, items: E.txItems(b, x) };
+    const items = [];
+    const base = x.v - (x.extra ? x.extra.v : 0);
+    if (base > 0) items.push({ b: b.id, k: E.keyOf(b), v: base, pooled: !!(b.req && b.req.pooled), unit: x.unit });
+    if (x.extra) items.push({ b: x.extra.b.id, k: E.keyOf(x.extra.b), v: x.extra.v, pooled: !!(x.extra.b.req && x.extra.b.req.pooled), unit: unitOf(x.extra.b) });
+    const tx = { id: 't' + ts + '-' + Math.random().toString(36).slice(2, 7), ts, card: b.card, amt: ui.amount, items };
     LEDGER.push(tx);
     if (!saveLedger()) {
       LEDGER.pop();
@@ -775,8 +721,6 @@
       return;
     }
     if (d.cancel) { cancelTx(d.cancel); return; }
-    if (d.split) { ui.split = d.split === '1'; render(true); return; }
-    if (t.id === 'planDone') { confirmPlan(); return; }
     if (d.flag) { S.checks[d.flag] = true; saveS(); render(true); return; }
     if (d.soldier) { S.soldier = d.soldier === '1'; saveS(); render(true); return; }
     if (d.lm) { ui.month = E.addMonth(ui.month, Number(d.lm)); render(true); return; }

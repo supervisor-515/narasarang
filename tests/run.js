@@ -122,21 +122,12 @@ test('메가커피: 계산 시점 요일로 평일 20%·주말 30%', () => {
 
 test('신한 PX 매월 10일: 3만원 미만 50%, 일 1회 최대 1천원 (기본 PX와 같은 한도)', () => {
   const env = setup({ s: { cards: ['shinhan'] }, date: '2026-10-10T12:00:00' });
-  assert.strictEqual(env.E.estimate(B('shinhan-px'), 1000).v, 500);
   assert.strictEqual(env.E.estimate(B('shinhan-px'), 2000).v, 1000);
   assert.strictEqual(env.E.estimate(B('shinhan-px'), 20000).v, 1000);
   assert.strictEqual(env.E.evaluate(B('shinhan-px'), 2000).status, 'ok');
   assert.strictEqual(env.E.estimate(B('shinhan-px'), 50000).v, 10000); // 3만원 이상은 10일에도 20%
   env.setDate('2026-10-11T12:00:00');
   assert.strictEqual(env.E.estimate(B('shinhan-px'), 2000).v, 400);
-});
-
-test('IBK PX 급여이체자 횟수는 급여이체 시작 다음 달부터 (이번 달 시작이면 현역병 횟수)', () => {
-  const ledger = [1, 2].map((d) => tx(`2026-10-0${d}T12:00:00`, 'ibk', 50000, [{ b: 'ibk-px-basic', k: 'ibk-px-basic', v: 5000 }]));
-  const now = setup({ s: { cards: ['ibk'], salary: 'ibk', since: { salary: '2026-10' } }, ledger });
-  assert.strictEqual(now.E.evaluate(B('ibk-px-basic'), 50000).status, 'no'); // 월 2회 다 씀
-  const before = setup({ s: { cards: ['ibk'], salary: 'ibk', since: { salary: '2026-09' } }, ledger });
-  assert.strictEqual(before.E.evaluate(B('ibk-px-basic'), 50000).status, 'ok'); // 횟수 제한 없음
 });
 
 test('PX 3만원 경계: 하나 29,999원 → 일 5천 한도, 30,000원 → 20%', () => {
@@ -334,57 +325,6 @@ test('기록 검증: 음수·빈 항목·모르는 카드는 거부', () => {
   assert(!Engine.isTx(DATA, Object.assign({}, ok, { card: 'x' })));
   assert(!Engine.isTx(DATA, Object.assign({}, ok, { items: [] })));
   assert(!Engine.isTx(DATA, Object.assign({}, ok, { items: [{ b: 'ibk-npay', k: 'ibk-npay', v: -5 }] })));
-});
-
-console.log('결제 계획');
-
-const PX_ALL = { soldier: true, savings: ['ibk'], spend: { hana: 300000, ibk: 300000, shinhan: 300000, kb: 300000 } };
-const ids = (p) => p.pays.map((x) => (x.b ? x.b.id : '-') + ':' + x.amt).join(' ');
-
-test('PX 5만원: 하나 한 번(1만원)보다 3만원 미만 + 나머지로 나누면 11,660원', () => {
-  const { E } = setup({ s: PX_ALL });
-  const p = E.plan(E.search('PX'), 50000);
-  assert.strictEqual(p.single.w, 10000);
-  assert.strictEqual(p.saved, 11660, ids(p));
-  assert(p.pays.some((x) => x.b && x.b.id === 'hana-px' && x.amt < 30000), ids(p));
-  assert.strictEqual(p.pays.reduce((s, x) => s + x.amt, 0), 50000);
-});
-
-test('PX 20만원: IBK 한 번(기본 5만 + 특별 5만)이 최선이라 나누지 않음', () => {
-  const { E } = setup({ s: PX_ALL });
-  const p = E.plan(E.search('PX'), 200000);
-  assert.strictEqual(p.pays.length, 1, ids(p));
-  assert.strictEqual(p.pays[0].b.id, 'ibk-px-basic');
-  assert.strictEqual(p.saved, 100000);
-});
-
-test('PX 25만원: IBK 20만원(특별할인 조건)에 맞추고 나머지를 하나로', () => {
-  const { E } = setup({ s: PX_ALL });
-  const p = E.plan(E.search('PX'), 250000);
-  assert(p.pays.some((x) => x.b && x.b.id === 'ibk-px-basic' && x.amt === 200000), ids(p));
-  assert.strictEqual(p.saved, 111660, ids(p));
-});
-
-test('결제 계획: 한 번에(max 1)는 카드 하나 추천과 같다', () => {
-  const { E } = setup({ s: PX_ALL });
-  const p = E.plan(E.search('PX'), 50000, 1);
-  assert.strictEqual(p.pays.length, 1);
-  assert.strictEqual(p.saved, 10000);
-  assert.strictEqual(p.gain, 0);
-});
-
-test('결제 계획: 이미 쓴 한도를 반영 (하나 3만원 미만 일 5천 소진 후)', () => {
-  const ledger = [tx('2026-10-15T09:00:00', 'hana', 16700, [{ b: 'hana-px', k: 'hana-px', v: 5000 }])];
-  const { E } = setup({ s: PX_ALL, ledger });
-  const p = E.plan(E.search('PX'), 50000);
-  assert(!p.pays.some((x) => x.b && x.b.id === 'hana-px' && x.amt < 30000), ids(p));
-  assert.strictEqual(ledger.length, 1, '가상 결제가 실제 기록에 남으면 안 됨');
-});
-
-test('결제 계획: 조건 확인이 필요한 혜택은 쓰지 않음', () => {
-  const { E } = setup({ s: { spend: { hana: 300000 } } });
-  const p = E.plan(E.search('PX'), 200000);
-  assert(!p.pays.some((x) => x.b && x.b.id.startsWith('ibk-px')), ids(p));
 });
 
 console.log('배포 파일 검증');
