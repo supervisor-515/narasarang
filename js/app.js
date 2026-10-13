@@ -74,7 +74,7 @@
   const ui = {
     tab: S.onboarded ? 'home' : 'settings', q: '', amount: 0, sector: 'px', card: null,
     open: new Set(), txOpen: new Set(), month: thisMonth(),
-    pq: 'PX', planMax: 3,
+    split: false, // PX: 한 번에 결제 / 카드 나눠서 결제
   };
 
   // ───────── 유틸 ─────────
@@ -248,7 +248,8 @@
         <p class="px-sub">${S.cards.length ? `내 카드 ${S.cards.map((id) => CARD[id].short).join('·')} · 급여 ${esc(salary)}` : '설정에서 내 카드를 고르면 맞춤으로 보여드려요'}</p>
       </div>`;
     html += amountCard('PX에서');
-    html += `<div id="results">${pxResults()}</div>`;
+    html += `<div class="seg" role="group" aria-label="결제 방식">${[[false, '한 번에 결제'], [true, '카드 나눠서 결제']].map(([v, l]) => `<button class="${ui.split === v ? 'on' : ''}" ${pressed(ui.split === v)} data-split="${v ? 1 : 0}">${l}</button>`).join('')}</div>`;
+    html += `<div id="results">${ui.split ? planResults() : pxResults()}</div>`;
     if (!S.cards.length) {
       html += `<div class="section cta"><div><b>내 나라사랑카드를 골라주세요</b><div class="muted">지금은 4개 카드 혜택을 모두 보여줘요</div></div><button data-go="settings">설정</button></div>`;
     }
@@ -320,45 +321,23 @@
     return best(rows, `${s.name}`) + (list(rows, `혜택 ${rows.length}개 <small>좋은 순</small>`) || '<div class="empty"><div class="big">📭</div><p>이 섹터에 해당하는 혜택이 없어요</p></div>');
   }
 
-  // ───────── 화면: 결제 계획 ─────────
-  // 가기 전에 쓸 금액을 넣으면, 카드 하나로 낼 때와 여러 번(카드)으로 나눠 낼 때를 비교
-  const PLAN_QUICK = ['PX', '편의점', '스타벅스', '배달의민족', '택시', 'KTX', '쿠팡'];
-  function viewPlan() {
-    let html = `<h1 class="page-title">결제 계획</h1>
-      <p class="hint plan-intro">가기 전에 쓸 금액을 넣으면, 카드 하나로 낼 때와 나눠서 낼 때 중 어느 쪽이 더 아끼는지 알려드려요.</p>
-      <div class="search-wrap">
-        <label class="search ${ui.pq ? 'has-value' : ''}">
-          <span aria-hidden="true">📍</span>
-          <input id="pq" type="search" enterkeyhint="next" autocomplete="off" aria-label="결제할 곳" placeholder="어디서 쓸 건가요? (PX, GS25, 스타벅스…)" value="${esc(ui.pq)}">
-          <button class="clear" id="pclear" type="button" aria-label="결제할 곳 지우기">✕</button>
-        </label>
-        <div class="chips" style="margin-top:8px">${PLAN_QUICK.map((k) => `<button class="chip ${k === ui.pq ? 'on' : ''}" ${pressed(k === ui.pq)} data-pq="${esc(k)}">${esc(k)}</button>`).join('')}</div>
-      </div>`;
-    html += amountCard(ui.pq.trim() ? `‘${ui.pq.trim()}’에서` : '', '얼마 쓸 예정인가요?');
-    html += `<div class="seg" role="group" aria-label="최대 나눠 내기">${[[1, '한 번에'], [2, '2번까지'], [3, '3번까지']].map(([n, l]) => `<button class="${ui.planMax === n ? 'on' : ''}" ${pressed(ui.planMax === n)} data-pmax="${n}">${l}</button>`).join('')}</div>`;
-    html += `<div id="results">${planResults()}</div>`;
-    return html;
-  }
-
+  // ───────── PX 카드 나눠서 결제 ─────────
+  // 같은 금액을 여러 번(카드)으로 나눠 낼 때 가장 많이 아끼는 조합을 카드 하나로 낼 때와 비교
+  const pxBenefits = () => BENEFITS.filter((b) => b.sector === 'px' && visibleCards().includes(b.card));
   function planResults() {
-    const q = ui.pq.trim();
-    if (!q) return '<div class="empty"><div class="big">📍</div><p>결제할 곳을 먼저 골라주세요</p></div>';
-    const found = E.search(q).filter((b) => visibleCards().includes(b.card));
-    if (!found.length) return `<div class="empty"><div class="big">🤔</div><p>‘${esc(q)}’ 관련 혜택을 찾지 못했어요</p></div>`;
-    if (!ui.amount) return '<div class="empty"><div class="big">🧮</div><p>쓸 금액을 넣으면 결제 계획을 짜드려요</p></div>';
-    const p = E.plan(found, ui.amount, ui.planMax);
+    if (!ui.amount) return '<div class="empty"><div class="big">🧮</div><p>쓸 금액을 넣으면 카드를 어떻게 나눠 낼지 알려드려요</p></div>';
+    const found = pxBenefits();
+    const p = E.plan(found, ui.amount);
     const pays = p.pays.filter((x) => x.b);
     const left = found.filter((b) => b.calc && !b.addon && E.evaluate(b, null).status === 'check').length;
-    const wheres = new Set(pays.map((x) => x.b.where));
     let html = `<div class="section plan">
       <div class="plan-sum">
         <div><span class="muted">${p.pays.length > 1 ? `${p.pays.length}번 나눠 내면` : '이렇게 내면'}</span><b>${won(p.saved)} 아껴요</b></div>
-        ${p.gain > 0 ? `<span class="pill ok">카드 하나보다 ${won(p.gain)} 더</span>` : ''}
+        ${p.gain > 0 ? `<span class="pill ok">한 번에 낼 때보다 ${won(p.gain)} 더</span>` : ''}
       </div>
       <ol class="plan-steps">${p.pays.map((x, i) => planStep(x, i)).join('')}</ol>
-      ${p.gain > 0 && p.single.b ? `<p class="hint">카드 하나로 낼 때 최선: ${esc(CARD[p.single.b.card].short)} ${esc(p.single.b.title)} · ${won(p.single.w)}</p>` : ''}
-      ${p.pays.length > 1 ? '<p class="hint">결제마다 따로 계산해요 (한 번에 나눠 결제하거나 따로 사도 돼요). 순서대로 내면 한도가 위처럼 차감돼요.</p>' : ''}
-      ${wheres.size > 1 ? '<p class="hint warn-text">⚠️ 대상 가맹점이 다른 혜택이 섞여 있어요. 가는 곳 이름(예: GS25, CU)으로 검색하면 더 정확해요.</p>' : ''}
+      ${p.gain > 0 && p.single.b ? `<p class="hint">한 번에 낼 때 최선: ${esc(CARD[p.single.b.card].short)} ${esc(p.single.b.title)} · ${won(p.single.w)}</p>` : ''}
+      ${p.pays.length > 1 ? '<p class="hint">계산대에서 금액을 나눠 결제하거나 물건을 나눠 사면 돼요. 결제마다 따로 할인되고, 이 순서대로 내면 한도가 위처럼 차감돼요.</p>' : '<p class="hint">나눠 내도 더 아낄 수 없어서 한 번에 내는 게 좋아요.</p>'}
       ${!pays.length ? `<p class="hint">지금 조건으로 받을 수 있는 혜택이 없어요</p>` : ''}
       ${left ? `<p class="hint">조건 확인이 필요한 혜택 ${left}개는 계산에서 뺐어요 · <button class="link" data-go="settings">설정에서 입력</button></p>` : ''}
       ${pays.length ? '<button class="confirm" id="planDone">이대로 결제했어요 · 모두 기록</button>' : ''}
@@ -383,7 +362,7 @@
 
   // 계획대로 결제했으면 결제마다 기록 (순서대로 한도 차감)
   function confirmPlan() {
-    const p = E.plan(E.search(ui.pq.trim()).filter((b) => visibleCards().includes(b.card)), ui.amount, ui.planMax);
+    const p = E.plan(pxBenefits(), ui.amount);
     const pays = p ? p.pays.filter((x) => x.b) : [];
     if (!pays.length) return;
     const ts = Date.now();
@@ -625,7 +604,7 @@
   }
 
   // ───────── 렌더 & 이벤트 ─────────
-  const VIEWS = { home: viewHome, plan: viewPlan, sector: viewSector, cards: viewCards, settings: viewSettings };
+  const VIEWS = { home: viewHome, sector: viewSector, cards: viewCards, settings: viewSettings };
 
   function render(keepScroll) {
     const y = window.scrollY;
@@ -647,7 +626,7 @@
     if (ui.tab === 'home') {
       const pxHome = !!$('.px-home');
       if (!ui.q.trim()) {
-        if (pxHome && res) { res.innerHTML = pxResults(); return; }
+        if (pxHome && res) { res.innerHTML = ui.split ? planResults() : pxResults(); return; }
         render(true); focusEnd('#q'); return;
       }
       if (pxHome || !res) { render(true); focusEnd('#q'); return; }
@@ -658,13 +637,6 @@
       res.innerHTML = resultsHTML(rows);
       $('.search').classList.toggle('has-value', !!ui.q);
       showTickets(rows.map((r) => r.b));
-    } else if (ui.tab === 'plan' && res) {
-      res.innerHTML = planResults();
-      const pq = $('#pq');
-      if (pq) pq.closest('.search').classList.toggle('has-value', !!ui.pq);
-      document.querySelectorAll('[data-pq]').forEach((b) => { const on = b.dataset.pq === ui.pq; b.classList.toggle('on', on); b.setAttribute('aria-pressed', on); });
-      const lbl = $('.amt-label');
-      if (lbl) lbl.textContent = `${ui.pq.trim() ? `‘${ui.pq.trim()}’에서 ` : ''}얼마 쓸 예정인가요?`;
     } else if (ui.tab === 'sector' && res) {
       res.innerHTML = sectorResults(ranked(BENEFITS.filter((b) => b.sector === ui.sector)));
     }
@@ -803,10 +775,8 @@
       return;
     }
     if (d.cancel) { cancelTx(d.cancel); return; }
-    if (d.pq) { ui.pq = d.pq; const el = $('#pq'); if (el) el.value = d.pq; refreshResults(); if (!ui.amount && $('#amt')) $('#amt').focus(); return; }
-    if (d.pmax) { ui.planMax = Number(d.pmax); render(true); return; }
+    if (d.split) { ui.split = d.split === '1'; render(true); return; }
     if (t.id === 'planDone') { confirmPlan(); return; }
-    if (t.id === 'pclear') { ui.pq = ''; render(true); focusEnd('#pq'); return; }
     if (d.flag) { S.checks[d.flag] = true; saveS(); render(true); return; }
     if (d.soldier) { S.soldier = d.soldier === '1'; saveS(); render(true); return; }
     if (d.lm) { ui.month = E.addMonth(ui.month, Number(d.lm)); render(true); return; }
@@ -854,7 +824,6 @@
   document.addEventListener('input', (ev) => {
     const el = ev.target;
     if (el.id === 'q') { ui.q = el.value; refreshResults(); }
-    if (el.id === 'pq') { ui.pq = el.value; refreshResults(); }
     if (el.id === 'amt') setAmount(parseInt(el.value.replace(/[^0-9]/g, ''), 10) || 0);
   });
 
@@ -894,7 +863,6 @@
 
   document.addEventListener('keydown', (ev) => {
     if (ev.target.id === 'q' && ev.key === 'Enter') { const a = $('#amt'); if (a && !$('.amt-slot').hidden) a.focus(); else ev.target.blur(); }
-    if (ev.target.id === 'pq' && ev.key === 'Enter') { const a = $('#amt'); if (a) a.focus(); }
     if (ev.target.id === 'amt' && ev.key === 'Enter') ev.target.blur();
     const ds = ev.target.dataset || {};
     if ((ev.key === 'Enter' || ev.key === ' ') && (ds.id || ds.tx) && ev.target.getAttribute('role') === 'button') { ev.preventDefault(); ev.target.click(); }

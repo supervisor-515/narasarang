@@ -365,7 +365,6 @@ input[type="search"]::-webkit-search-cancel-button { -webkit-appearance: none; d
 .pips i.on { background: var(--tone); }
 
 /* 결제 계획 */
-.plan-intro { margin: -8px 4px 12px; }
 .plan-sum { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .plan-sum b { display: block; font-size: 26px; font-weight: 800; letter-spacing: -0.03em; color: var(--ok); margin-top: 2px; }
 .plan-steps { list-style: none; margin: 14px 0 0; padding: 0; }

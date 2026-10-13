@@ -120,14 +120,22 @@ test('메가커피: 계산 시점 요일로 평일 20%·주말 30%', () => {
   assert.strictEqual(env.E.estimate(B('ibk-mega'), 10000).v, 2000);
 });
 
-test('신한 PX 매월 10일: 3만원 미만 50%, 일 1회 최대 1천원 (기본 PX와 같은 한도)', () => {
+test('신한 PX: 상품설명서대로 매일 20% (3만원 미만은 건당 1천원·일 1회), 10일 50%는 확인 필요로만', () => {
   const env = setup({ s: { cards: ['shinhan'] }, date: '2026-10-10T12:00:00' });
-  assert.strictEqual(env.E.estimate(B('shinhan-px'), 2000).v, 1000);
+  assert.strictEqual(env.E.estimate(B('shinhan-px'), 2000).v, 400); // 10일에도 20%
   assert.strictEqual(env.E.estimate(B('shinhan-px'), 20000).v, 1000);
-  assert.strictEqual(env.E.evaluate(B('shinhan-px'), 2000).status, 'ok');
-  assert.strictEqual(env.E.estimate(B('shinhan-px'), 50000).v, 10000); // 3만원 이상은 10일에도 20%
-  env.setDate('2026-10-11T12:00:00');
-  assert.strictEqual(env.E.estimate(B('shinhan-px'), 2000).v, 400);
+  assert.strictEqual(env.E.estimate(B('shinhan-px'), 50000).v, 10000);
+  const rows = env.E.rank(env.E.search('PX'), 20000);
+  assert.strictEqual(rows.find((r) => r.b.id === 'shinhan-px-10th').e.status, 'check');
+  assert.notStrictEqual(env.E.bestOf(rows, 20000).b.id, 'shinhan-px-10th');
+});
+
+test('IBK PX 급여이체자 횟수는 급여이체 시작 다음 달부터 (이번 달 시작이면 현역병 횟수)', () => {
+  const ledger = [1, 2].map((d) => tx(`2026-10-0${d}T12:00:00`, 'ibk', 50000, [{ b: 'ibk-px-basic', k: 'ibk-px-basic', v: 5000 }]));
+  const now = setup({ s: { cards: ['ibk'], salary: 'ibk', since: { salary: '2026-10' } }, ledger });
+  assert.strictEqual(now.E.evaluate(B('ibk-px-basic'), 50000).status, 'no'); // 월 2회 다 씀
+  const before = setup({ s: { cards: ['ibk'], salary: 'ibk', since: { salary: '2026-09' } }, ledger });
+  assert.strictEqual(before.E.evaluate(B('ibk-px-basic'), 50000).status, 'ok'); // 횟수 제한 없음
 });
 
 test('PX 3만원 경계: 하나 29,999원 → 일 5천 한도, 30,000원 → 20%', () => {

@@ -1,5 +1,5 @@
 // 앱 파일을 바꾸면 VERSION을 올려야 사용자 기기에 새 버전이 반영됩니다.
-const VERSION = 'v14';
+const VERSION = 'v15';
 const PREFIX = 'narasarang-';
 const CACHE = PREFIX + VERSION;
 const TIMEOUT = 4000; // 네트워크가 이보다 느리면 저장된 파일로 응답

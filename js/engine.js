@@ -19,7 +19,7 @@
     soldier: { label: '현역 병사(의무복무) 여부', how: '설정 > 내 정보에서 선택해주세요' },
     ibkSoldier: {
       label: 'IBK 현역병 인정',
-      how: '전월 말일 기준 IBK 장병내일준비적금 보유, 복무확인서 제출(제출 다음 달부터), 전월 IBK 병 급여 수령 중 하나',
+      how: '전월 말일 기준 IBK 장병내일준비적금 보유, 복무확인서·건강보험자격득실확인서 제출(제출 다음 달부터), 전월 IBK 병 급여 수령 중 하나',
     },
     'mytag-kakaot': { label: 'BC카드 ‘카카오T’ 마이태그 등록', flag: 'mytag-kakaot', flagLabel: '카카오T 마이태그 등록했어요' },
     'mytag-coupang': { label: 'BC카드 ‘쿠팡·다이소·올리브영’ 마이태그 등록', flag: 'mytag-coupang', flagLabel: '쿠팡·다이소·올리브영 마이태그 등록했어요' },

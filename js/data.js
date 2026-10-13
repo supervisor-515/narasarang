@@ -128,6 +128,10 @@
   // IBK Npay 추가 적립(월 7·10회) 프로모션 종료
   const NPAY_EXTRA_END = new Date('2026-12-31T23:59:59').getTime();
 
+  // IBK 병 급여이체자: 전월 병 급여를 IBK 결제계좌로 받은 경우 (급여이체 시작한 다음 달부터)
+  const ym = (t) => { const d = new Date(t); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; };
+  const IBK_PAID = (s, t) => s.salary === 'ibk' && !((s.since || {}).salary >= ym(t));
+
   const IBK_PX_PERSONAL = (s) => {
     if (s.salary === 'ibk') return '내 조건: IBK 급여이체자 → 3만원 미만 월 6회, 3만원 이상 횟수 제한 없음, 특별할인 연 2회';
     if ((s.savings || []).includes('ibk')) return '내 조건: IBK 장병내일준비적금 보유 → 현역병 인정 (3만원 미만 월 3회, 3만원 이상 월 2회, 특별할인 연 1회)';
@@ -181,10 +185,10 @@
       notes: ['결제 건당 1만원 이상', '백화점·마트 등 입점 매장, 선불카드 충전 제외'] },
     { id: 'hana-family', card: 'hana', sector: 'food', group: 'Basic · 전월 10만원', title: '패밀리레스토랑 캐시백', lim: [{ month: 20000 }],
       where: '아웃백스테이크하우스, VIPS', kw: '빕스', rate: 20, value: '20%', type: '캐시백', limit: '월 2만원',
-      req: { spend: 100000, pooled: true }, calc: { tiers: [[0, 20]], min: 10000 } },
+      req: { spend: 100000, pooled: true }, calc: { tiers: [[0, 20]], min: 10000 }, notes: ['백화점·마트·휴게소 등 입점 매장, 배달·예약 앱 주문 제외'] },
     { id: 'hana-fastfood', card: 'hana', sector: 'food', group: 'Basic · 전월 10만원', title: '패스트푸드 캐시백', lim: [{ month: 2000 }],
       where: '롯데리아, 맥도날드, 버거킹, KFC, 써브웨이, 맘스터치', kw: '맥날 햄버거', rate: 5, value: '5%', type: '캐시백', limit: '월 2천원',
-      req: { spend: 100000, pooled: true }, calc: { tiers: [[0, 5]], min: 10000, cap: 2000 } },
+      req: { spend: 100000, pooled: true }, calc: { tiers: [[0, 5]], min: 10000, cap: 2000 }, notes: ['백화점·마트·휴게소 등 입점 매장, 배달·예약 앱 주문 제외'] },
     { id: 'hana-online', ctx: ['공식 홈페이지·앱에서 직접 결제'], card: 'hana', sector: 'shop', group: 'Basic · 전월 10만원', title: '온라인쇼핑 캐시백', lim: [{ month: 5000 }],
       where: '무신사, 29CM, G마켓, 옥션, 11번가', kw: '지마켓', rate: 10, value: '10%', type: '캐시백', limit: '월 5천원',
       req: { spend: 100000, pooled: true }, calc: { tiers: [[0, 10]], min: 10000, cap: 5000 },
@@ -217,13 +221,13 @@
       req: { salary: 'hana' }, notes: ['급여이체 조건 충족 다음 달부터 자동 가입', '가입일부터 92일 이후 보상 가능', '문의: NICE평가정보 1600-1533'] },
 
     // ───────────────────────── IBK ─────────────────────────
-    { id: 'ibk-px-basic', need: ['ibkSoldier'], card: 'ibk', sector: 'px', group: '파워업 · 실적 무관', title: '군마트(PX) 기본할인', extra: 'ibk-px-special', lim: [{ under: 30000, month: 10000, monthCount: (s) => (s.salary === 'ibk' ? 6 : 3) }, { over: 30000, month: 50000, monthCount: (s) => (s.salary === 'ibk' ? Infinity : 2) }],
+    { id: 'ibk-px-basic', need: ['ibkSoldier'], card: 'ibk', sector: 'px', group: '파워업 · 실적 무관', title: '군마트(PX) 기본할인', extra: 'ibk-px-special', lim: [{ under: 30000, month: 10000, monthCount: (s, t) => (IBK_PAID(s, t) ? 6 : 3) }, { over: 30000, month: 50000, monthCount: (s, t) => (IBK_PAID(s, t) ? Infinity : 2) }],
       where: '전국 군부대 PX (해군마트 포함)', rate: 30, value: '최대 30%', type: '청구할인',
-      limit: '3만원 미만 15% (월 1만) / 3만원↑ 10%, 7만원↑ 20%, 10만원↑ 30% (월 5만)',
+      limit: '건당 3만원 미만 15% (월 1만) / 3만원↑ 10%, 7만원↑ 20%, 10만원↑ 30% (월 5만) · 두 구간 한도·횟수 따로',
       calc: { tiers: [[0, 15], [30000, 10], [70000, 20], [100000, 30]], cap: 50000, capUnder: [30000, 10000] },
       personal: IBK_PX_PERSONAL,
       notes: ['20만원 이상이면 특별할인 5만원이 함께 적용돼요 (최대 50%)', '예) 20만원 결제 → 기본 30% 5만원 + 특별 5만원 = 10만원 할인'] },
-    { id: 'ibk-px-special', need: ['ibkSoldier'], card: 'ibk', sector: 'px', group: '파워업 · 실적 무관', title: '군마트(PX) 특별할인', addon: true, lim: [{ yearCount: (s) => (s.salary === 'ibk' ? 2 : 1) }],
+    { id: 'ibk-px-special', need: ['ibkSoldier'], card: 'ibk', sector: 'px', group: '파워업 · 실적 무관', title: '군마트(PX) 특별할인', addon: true, lim: [{ yearCount: (s, t) => (IBK_PAID(s, t) ? 2 : 1) }],
       where: '전국 군부대 PX (해군마트 포함)', rate: 25, value: '5만원', type: '청구할인',
       limit: '건당 20만원 이상 결제 시 · 현역병 연 1회 / 급여이체자 연 2회',
       calc: { fixed: 50000, min: 200000 }, personal: IBK_PX_PERSONAL,
@@ -237,7 +241,8 @@
       calc: { tiers: [[0, 10]] }, notes: ['주류 제외'] },
     { id: 'ibk-emart24', ctx: ['음료(주류 제외)·아이스크림·신선식품만'], card: 'ibk', sector: 'store', group: '특별제휴 · ~26.12.31', title: '이마트24 주요품목 현장할인', lim: [{ dayCount: 1 }],
       where: '이마트24 (음료·아이스크림·신선식품)', kw: 'emart24', rate: 10, value: '10%', type: '현장할인',
-      limit: '1일 1회 · 한도 없음', calc: { tiers: [[0, 10]] }, until: '2026-12-31', notes: ['주류 제외'] },
+      limit: '1일 1회 · 한도 없음', calc: { tiers: [[0, 10]] }, until: '2026-12-31',
+      notes: ['대상: 도시락·김밥·주먹밥·햄버거·샌드위치, 즉석커피·커피음료, 스포츠·에너지·탄산·기능성음료, 아이스크림, 생수·탄산수', '주류 제외'] },
     { id: 'ibk-train', card: 'ibk', sector: 'train', group: '나라 · 전월 8만원', title: 'KTX·SRT·고속버스 청구할인', lim: [{ monthCount: 2, yearCount: 4 }],
       where: 'KTX, SRT, 새마을호, 무궁화호, 전국 고속버스', rate: 5, value: '5%', type: '청구할인',
       limit: '통합 월 2회 · 연 4회 · 1회 2천원', req: { spend: 80000, waiveSalary: 'ibk' }, calc: { tiers: [[0, 5]], cap: 2000 } },
@@ -356,11 +361,15 @@
       limit: '인강 30% · 라이브 20% · 어학원 10%', until: '2026-12-31', notes: ['해커스 인강 사이트 로그인 후 카드 인증'] },
 
     // ───────────────────────── 신한 ─────────────────────────
-    { id: 'shinhan-px', ctx: ['GS25는 군부대 안 해군마트만 (일반 GS25는 편의점 혜택)'], card: 'shinhan', sector: 'px', group: '슈퍼쏠저 · 실적 무관', title: 'PX 캐시백 (매월 10일 3만원 미만 50%)', lim: [{ under: 30000, dayCount: 1 }, { month: 100000 }],
+    { id: 'shinhan-px', ctx: ['GS25는 군부대 안 해군마트만 (일반 GS25는 편의점 혜택)'], card: 'shinhan', sector: 'px', group: '슈퍼쏠저 · 실적 무관', title: 'PX 캐시백', lim: [{ under: 30000, dayCount: 1 }, { month: 100000 }],
       where: '군마트(PX), GS25 해군마트', rate: 20, value: '20%', type: '캐시백',
-      limit: '20% (매월 10일은 3만원 미만 50%) · 3만원 미만은 일 1회 최대 1천원 · 월 최대 10만원',
-      calc: { tiers: [[0, 20]], capUnder: [30000, 1000], days: { dom: [10], tiers: [[0, 50], [30000, 20]] } },
-      notes: ['GS25 해군마트는 한도 초과 시 Life 편의점 20%가 적용'] },
+      limit: '20% · 건당 3만원 미만은 일 1회 최대 1천원 · 월 최대 10만원',
+      calc: { tiers: [[0, 20]], capUnder: [30000, 1000] },
+      notes: ['GS25 해군마트는 횟수·한도 초과 시 Life 편의점 20%가 적용 (1회 1천원 한도 초과분에는 추가 적용 안 됨)', '전월 실적과 관계없이 적용'] },
+    { id: 'shinhan-px-10th', card: 'shinhan', sector: 'px', group: '슈퍼쏠저 · 확인 필요', title: 'PX 매월 10일 50% (확인 필요)',
+      where: '군마트(PX)', rate: 0, value: '50%', type: '캐시백',
+      verify: '신한카드 상품설명서(2025.11)에 없는 내용이에요. 진행 중인 이벤트인지 신한카드(1544-7000)에 확인해주세요',
+      notes: ['확인 전까지 예상 할인과 추천·결제 나누기 계산에서 빠져요'] },
     { id: 'shinhan-welfare', card: 'shinhan', sector: 'welfare', group: '슈퍼쏠저 · 실적 무관', title: '체력단련장·휴양시설 캐시백', lim: [{ month: 20000 }],
       where: '군 체력단련장, 군 휴양시설', kw: '골프 콘도', rate: 20, value: '20%', type: '캐시백', limit: '월 2만원',
       calc: { tiers: [[0, 20]], cap: 20000 }, notes: ['이용 시설은 국군복지포털(welfare.mil.kr)에서 확인'] },
@@ -460,7 +469,7 @@
       req: { spend: 100000, pooled: true }, calc: { tiers: [[0, 20]] } },
     { id: 'kb-cgv', card: 'kb', sector: 'movie', group: '꿈꾸고 즐기는 · 통합한도', title: 'CGV 35% 환급할인',
       where: 'CGV (현장·온라인)', rate: 35, value: '35%', type: '환급할인', limit: '1만원 이상 시 건당 2만원까지 (최대 7천원)',
-      req: { spend: 100000, pooled: true }, calc: { tiers: [[0, 35]], min: 10000, upto: 20000 }, notes: ['상품권 구매, 매점 이용 제외'] },
+      req: { spend: 100000, pooled: true }, calc: { tiers: [[0, 35]], min: 10000, upto: 20000 }, notes: ['인터넷 예매는 CGV 홈페이지·앱 결제만', '상품권 구매, 매점 이용 제외'] },
     { id: 'kb-starbucks', ctx: ['백화점·마트 입점 매장 제외'], card: 'kb', sector: 'cafe', group: '꿈꾸고 즐기는 · 통합한도', title: '스타벅스 20% 환급할인',
       where: '스타벅스', rate: 20, value: '20%', type: '환급할인', limit: '1만원 이상 시 건당 2만원까지 (최대 4천원)',
       req: { spend: 100000, pooled: true }, calc: { tiers: [[0, 20]], min: 10000, upto: 20000 }, notes: ['상품권 구매, 스타벅스 카드 충전, 입점 매장 제외'] },
