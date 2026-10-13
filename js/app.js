@@ -35,7 +35,7 @@
   // 결제 경로 (null = 모름). 검색어가 바뀌면 PX 위치를 뺀 나머지는 다시 모름으로
   const route = { px: null, channel: null, promo: null };
   const E = window.Engine.create(DATA, { getS: () => S, getLedger: () => LEDGER, getInput: () => input, getRoute: () => route });
-  const { CARD, SECTOR, BANK, BENEFIT, NEEDS, won, man, ymd, thisMonth, unitOf } = E;
+  const { CARD, SECTOR, BANK, BENEFIT, NEEDS, won, man, ymd, thisMonth, unitOf, josa } = E;
 
   // 예전 설정: 사용액 입력 월이 없으면 이번 달로 간주
   Object.keys(S.spend).forEach((id) => { if (!S.spendAt[id]) S.spendAt[id] = thisMonth(); });
@@ -195,7 +195,7 @@
     return `
       <div class="best ${c.id === 'kb' ? 'dark-text' : ''}" style="${cardVars(c)}">
         <div class="k">${esc(label)} ${ctx.length ? '조건 충족 시 예상 혜택' : '추천'}</div>
-        <div class="t">${esc(c.name)}로 결제하세요</div>
+        <div class="t">${esc(josa(c.name, '으로/로'))} 결제하세요</div>
         <div class="v">${esc(v)}</div>
         <div class="s">${esc(top.b.title)}${top.x && top.x.extra ? ` + ${esc(top.x.extra.b.title)} ${won(top.x.extra.v)}` : top.b.limit ? ' · ' + esc(top.b.limit) : ''}</div>
         ${why ? why.lines.map((l) => `<div class="s why">· ${esc(l)}</div>`).join('') : ''}
@@ -278,7 +278,8 @@
 
     html += monthSummary();
 
-    const ending = ranked(BENEFITS.filter((b) => b.until)).filter((r) => r.e.status !== 'none').slice(0, 4);
+    // 위 PX 금액과 무관한 목록이라 금액 없이 판정 (다른 가맹점 할인을 PX 금액으로 계산하지 않게)
+    const ending = E.rank(BENEFITS.filter((b) => b.until), 0, visibleCards()).filter((r) => r.e.status !== 'none').slice(0, 4);
     if (ending.length) html += list(ending, `기간 한정 혜택 <small>~${ending[0].b.until.replace(/-/g, '.')}</small>`);
 
     const pending = ranked(BENEFITS).filter((r) => r.e.status === 'check');
@@ -399,7 +400,7 @@
     const ctx = x.b.ctx || [];
     return `<li class="plan-step ${state || ''}">${no}${logo(c)}
       <div class="body">
-        <div class="title">${esc(c.short)}로 ${won(x.amt)}</div>
+        <div class="title">${esc(josa(c.short, '으로/로'))} ${won(x.amt)}</div>
         <div class="where">${esc((x.x.fallback || x.b).title)}${x.x.extra ? ` + ${esc(x.x.extra.b.title)}` : ''}</div>
         ${ctx.length && state !== 'done' ? `<div class="where warn-text">결제 전 확인 · ${ctx.map(esc).join(' · ')}</div>` : ''}
         ${x.x.partial ? '<div class="where warn-text">남은 한도까지만 적용</div>' : ''}
@@ -487,7 +488,7 @@
     const c = st.card && CARD[st.card];
     const b = st.b && BENEFIT[st.b];
     return `<li class="plan-step ${done ? 'done' : current ? 'cur' : ''}"><span class="no">${done ? '✓' : i + 1}</span>${c ? logo(c) : ''}
-      <div class="body"><div class="title">${c ? `${esc(c.short)}로 ` : ''}${won(st.amt)}${c ? '' : ' · 아무 카드'}</div><div class="where">${done ? '완료' : current ? '지금 결제할 차례' : '대기'}${b ? ` · ${esc(b.title)}` : ''}</div></div>
+      <div class="body"><div class="title">${c ? `${esc(josa(c.short, '으로/로'))} ` : ''}${won(st.amt)}${c ? '' : ' · 아무 카드'}</div><div class="where">${done ? '완료' : current ? '지금 결제할 차례' : '대기'}${b ? ` · ${esc(b.title)}` : ''}</div></div>
       <div class="val"><b class="${st.b ? 'est' : 'zero'}">${st.b ? '−' + esc(fmtV(st.v, st.unit)) : '0원'}</b></div></li>`;
   }
 
@@ -1015,7 +1016,7 @@
       let d;
       try { d = JSON.parse(r.result); } catch (e) { toast('⚠️ 백업 파일을 읽지 못했어요'); return; }
       if (!d || d.app !== 'narasarang' || !d.settings || !Array.isArray(d.ledger)) { toast('⚠️ 나라사랑 혜택 백업 파일이 아니에요'); return; }
-      if (![2, 3].includes(d.v)) { toast(`⚠️ 지원하지 않는 백업 버전(v${String(d.v).slice(0, 8)})이에요. 앱을 최신으로 업데이트한 뒤 다시 시도해주세요`); return; }
+      if (![2, 3].includes(d.v)) { toast(`⚠️ 지원하지 않는 백업 파일이에요 (버전 ${String(d.v).slice(0, 8)}). 앱을 최신으로 업데이트한 뒤 다시 시도해주세요`); return; }
       // 알 수 없는 혜택·카드가 안 맞는 혜택·음수·중복 id·형식 오류 기록은 제외 (금액은 기록 당시 값 그대로)
       const { tx, dropped } = window.Engine.cleanImportTx(DATA, d.ledger, fixId);
       const co = d.v >= 3 && coValid(d.checkout) ? d.checkout : null;

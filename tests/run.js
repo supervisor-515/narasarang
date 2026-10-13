@@ -478,6 +478,15 @@ test('잘못된 맞추기 값은 설정 불러오기에서 걸러냄', () => {
   assert.deepStrictEqual(r.adjust.map((a) => a.id), ['z']);
 });
 
+test('조사: 받침에 맞게 (신한으로·하나로·IBK로·KB로, 신한은·IBK는, 사용이라·소진이라)', () => {
+  const j = Engine.josa;
+  assert.deepStrictEqual(['신한', '하나', 'IBK', 'KB', '하나 나라사랑카드', '서울'].map((w) => j(w, '으로/로')), ['신한으로', '하나로', 'IBK로', 'KB로', '하나 나라사랑카드로', '서울로']);
+  assert.deepStrictEqual(['신한', '하나', 'IBK', 'KB'].map((w) => j(w, '은/는')), ['신한은', '하나는', 'IBK는', 'KB는']);
+  assert.strictEqual(j('이번 달 2회 모두 사용', '이라/라'), '이번 달 2회 모두 사용이라');
+  assert.strictEqual(j('통합한도 소진', '이라/라'), '통합한도 소진이라');
+  assert.strictEqual(j('5,000원', '을/를'), '5,000원을');
+});
+
 console.log('결제 계획');
 
 const PX_ALL = { soldier: true, savings: ['ibk'], spend: { hana: 300000, ibk: 300000, shinhan: 300000, kb: 300000 } };

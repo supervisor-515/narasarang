@@ -47,6 +47,29 @@
   const won = (n) => Math.round(n).toLocaleString('ko-KR') + '원';
   const man = (n) => (n >= 10000 ? (n / 10000).toLocaleString('ko-KR') + '만원' : won(n));
   const norm = (s) => String(s || '').toLowerCase().replace(/[\s·,()/._\-‘’'"]/g, '');
+  // 받침에 맞는 조사: josa('신한', '으로/로') → '신한으로', josa('IBK', '은/는') → 'IBK는'
+  // 영문·숫자는 읽는 소리 기준 (L·M·N·R, 0·1·3·6·7·8은 받침, 1·7·8·L·R은 ㄹ받침)
+  function josa(word, pair) {
+    const w = String(word ?? '');
+    const [withB, noB] = pair.split('/');
+    const ch = w.trim().slice(-1);
+    const code = ch.charCodeAt(0);
+    let batchim = false;
+    let rieul = false;
+    if (code >= 0xAC00 && code <= 0xD7A3) {
+      const jong = (code - 0xAC00) % 28;
+      batchim = jong !== 0;
+      rieul = jong === 8;
+    } else if (/[0-9]/.test(ch)) {
+      batchim = '013678'.includes(ch);
+      rieul = '178'.includes(ch);
+    } else if (/[a-z]/i.test(ch)) {
+      batchim = 'LMNR'.includes(ch.toUpperCase());
+      rieul = 'LR'.includes(ch.toUpperCase());
+    }
+    if (withB === '으로') return w + (batchim && !rieul ? '으로' : '로');
+    return w + (batchim ? withB : noB);
+  }
   const addMonth = (ym, k) => { const [y, m] = ym.split('-').map(Number); const d = new Date(y, m - 1 + k, 1); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}`; };
 
   function create(DATA, ctx) {
@@ -520,16 +543,18 @@
       else if (x && x.partial) lines.push(`남은 한도까지만 적용돼요 (${won(x.v)})`);
       else if (amt) {
         const left = remaining(top.b, amt);
-        if (isFinite(left.dRem) && left.dRem <= left.mRem) lines.push(`이 카드의 오늘 남은 한도 ${won(left.dRem)} 안에서 적용돼요`);
-        else if (isFinite(left.mRem)) lines.push(`이 카드의 이번 달 남은 한도 ${won(left.mRem)} 안에서 적용돼요`);
+        const v = x ? x.base != null ? x.base : x.v : 0;
+        const fit = (when, r) => (v >= r ? `이번 결제로 ${when} 남은 한도 ${won(r)}을 다 써요` : `${when} 남은 한도 ${won(r)} 안에서 적용돼요`);
+        if (isFinite(left.dRem) && left.dRem <= left.mRem) lines.push(fit('오늘', left.dRem));
+        else if (isFinite(left.mRem)) lines.push(fit('이번 달', left.mRem));
         else if (isFinite(left.rem)) lines.push(`남은 한도 ${won(left.rem)} 안에서 적용돼요`);
         else lines.push('이 금액에서 할인이 가장 커요');
       }
       const others = rows.filter((r) => r.b.card !== top.b.card && !r.b.addon);
       const spent = others.find((r) => r.e.status === 'no' && /소진|모두 사용/.test(r.e.why[0] || ''));
       const check = others.find((r) => r.e.status === 'check' && !r.b.verify);
-      if (spent) lines.push(`${CARD[spent.b.card].short}는 ${spent.e.why[0]}라 제외했어요`);
-      else if (check) lines.push(`${CARD[check.b.card].short}는 조건 확인이 필요해 추천에서 뺐어요`);
+      if (spent) lines.push(`${josa(CARD[spent.b.card].short, '은/는')} ${josa(spent.e.why[0], '이라/라')} 제외했어요`);
+      else if (check) lines.push(`${josa(CARD[check.b.card].short, '은/는')} 조건 확인이 필요해 추천에서 뺐어요`);
       if (x && x.condExtra) lines.push(`${ROUTE_HINT(top.b)} ${won(x.condExtra.v)} 추가 가능해요`);
       else if (top.e.route && top.e.route.length) lines.push('결제 방법·대상 조건을 고르면 더 정확해져요');
       const alt = rows.find((r) => r !== top && r.e.status === 'ok' && !r.b.addon && !r.b.verify && (!amt || (r.x && worth(r.x) > 0)) && r.b.card !== top.b.card)
@@ -654,7 +679,7 @@
 
     return {
       CARD, SECTOR, BANK, BENEFIT, NEEDS, TICKET_PRICE,
-      ymd, thisMonth, addMonth, won, man, norm,
+      ymd, thisMonth, addMonth, won, man, norm, josa,
       spendOf, spendStale, firstActive, cardLimit, pooledUsed, usage, remaining,
       needStatus, evaluate, estimate, search, searchIntent, rank, bestOf, explain, keyOf, effective, limitBreakdown, routeKeys, routeCheck, ROUTES,
       txItems, unitOf, plan, worth, PLAN_GAIN, pooledState, adjFor, samePeriod, pooledLimitOf: (id) => cardLimit(id),
@@ -729,5 +754,5 @@
     return { tx: out, dropped };
   }
 
-  return { create, NEEDS, sanitizeSettings, isTx, cleanImportTx };
+  return { create, NEEDS, sanitizeSettings, isTx, cleanImportTx, josa };
 }));
