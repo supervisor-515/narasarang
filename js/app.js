@@ -876,6 +876,29 @@
     if (keepScroll) window.scrollTo(0, y); else window.scrollTo(0, 0);
   }
 
+  // 홈 PX ↔ 검색 결과 화면 전환: 검색창은 그대로 두고 아래만 바꿈
+  // (검색창을 새로 그리면 한글 조합 중이던 글자가 끊겨 'ㅋㅓ'처럼 떨어져 입력됨)
+  function renderKeepSearch() {
+    const view = $('#view');
+    const wrap = view.querySelector('.search-wrap');
+    const input = wrap && wrap.querySelector('#q');
+    if (!input) { render(true); focusEnd('#q'); return; }
+    const tmp = document.createElement('div');
+    tmp.innerHTML = VIEWS[ui.tab]();
+    const fresh = tmp.querySelector('.search-wrap');
+    if (!fresh || !fresh.querySelector('#q')) { render(true); return; }
+    [...view.children].forEach((c) => { if (c !== wrap) c.remove(); });
+    let before = true;
+    [...tmp.childNodes].forEach((n) => {
+      if (n === fresh) { before = false; return; }
+      if (before) view.insertBefore(n, wrap); else view.appendChild(n);
+    });
+    input.placeholder = fresh.querySelector('#q').placeholder;
+    wrap.querySelector('.search').classList.toggle('has-value', !!ui.q);
+    fitAmount();
+    if (ui.q.trim()) showTickets(E.search(ui.q, visibleCards()));
+  }
+
   // 입력창은 다시 그리지 않고 결과만 갱신 (IME 조합·포커스 유지)
   function refreshResults() {
     const res = $('#results');
@@ -883,9 +906,9 @@
       const pxHome = !!$('.px-home');
       if (!ui.q.trim()) {
         if (pxHome && res) { res.innerHTML = ui.split !== 'one' ? planResults() : pxResults(); return; }
-        render(true); focusEnd('#q'); return;
+        renderKeepSearch(); return;
       }
-      if (pxHome || !res) { render(true); focusEnd('#q'); return; }
+      if (pxHome || !res) { renderKeepSearch(); return; }
       const rows = ranked(E.search(ui.q, visibleCards()));
       const slot = $('.amt-slot');
       slot.hidden = !rows.length;

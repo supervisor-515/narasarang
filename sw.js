@@ -1,5 +1,5 @@
 // 앱 파일을 바꾸면 VERSION을 올려야 사용자 기기에 새 버전이 반영됩니다.
-const VERSION = 'v18';
+const VERSION = 'v19';
 const PREFIX = 'narasarang-';
 const CACHE = PREFIX + VERSION;
 const SHELL = [
