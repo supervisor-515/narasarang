@@ -19,7 +19,7 @@
     soldier: { label: '현역 병사(의무복무) 여부', how: '설정 > 내 정보에서 선택해주세요' },
     ibkSoldier: {
       label: 'IBK 현역병 인정',
-      how: '전월 말일 기준 IBK 장병내일준비적금 보유, 복무확인서 제출(제출 다음 달부터), 전월 IBK 병 급여 수령 중 하나',
+      how: '전월 말일 기준 IBK 장병내일준비적금 보유, 복무확인서·건강보험자격득실확인서 제출(제출 다음 달부터), 전월 IBK 병 급여 수령 중 하나',
     },
     'mytag-kakaot': { label: 'BC카드 ‘카카오T’ 마이태그 등록', flag: 'mytag-kakaot', flagLabel: '카카오T 마이태그 등록했어요' },
     'mytag-coupang': { label: 'BC카드 ‘쿠팡·다이소·올리브영’ 마이태그 등록', flag: 'mytag-coupang', flagLabel: '쿠팡·다이소·올리브영 마이태그 등록했어요' },
@@ -59,10 +59,13 @@
     const savingOk = (bank) => (S().savings || []).includes(bank) && effective('saving-' + bank);
     const owned = (id) => (S().cards || []).includes(id);
     const keyOf = (b) => b.limKey || b.id;
+    const unitOf = (b) => (b && (b.type === '적립' || (b.calc && b.calc.steps)) ? 'point' : 'won');
 
     // ───── 기록 순회 ─────
+    // virtual: 결제 계획을 짤 때 아직 하지 않은 결제를 잠시 얹어 한도 차감을 미리 계산
+    let virtual = [];
     function eachItem(fn) {
-      (ctx.getLedger() || []).forEach((tx) => (tx.items || []).forEach((it) => fn(it, tx)));
+      (ctx.getLedger() || []).concat(virtual).forEach((tx) => (tx.items || []).forEach((it) => fn(it, tx)));
     }
 
     // ───── 전월 실적 ─────
@@ -291,7 +294,7 @@
       const c = b.calc;
       if (!c || !amt) return null;
       const t = now();
-      const unit = b.type === '적립' || c.steps ? 'point' : 'won';
+      const unit = unitOf(b);
       if (c.below && amt >= c.below) return { v: 0, unit, note: `${man(c.below)} 미만만` };
       if (c.min && amt < c.min) return { v: 0, unit, note: `${man(c.min)} 이상 결제 시` };
       if (c.steps) {
@@ -319,6 +322,15 @@
       if (c.cap) v = Math.min(v, c.cap);
       if (c.capUnder && amt < c.capUnder[0]) v = Math.min(v, c.capUnder[1]);
       return withExtra(b, amt, limitBy(b, amt, { v: Math.floor(v), rate, unit }));
+    }
+
+    // 결제 한 건의 기록 항목 (기본 + 중복 혜택)
+    function txItems(b, x) {
+      const items = [];
+      const base = x.v - (x.extra ? x.extra.v : 0);
+      if (base > 0) items.push({ b: b.id, k: keyOf(b), v: base, pooled: !!(b.req && b.req.pooled), unit: x.unit });
+      if (x.extra) items.push({ b: x.extra.b.id, k: keyOf(x.extra.b), v: x.extra.v, pooled: !!(x.extra.b.req && x.extra.b.req.pooled), unit: unitOf(x.extra.b) });
+      return items;
     }
 
     function limitBy(b, amt, x) {
@@ -377,11 +389,95 @@
       return rows.find((r) => r.e.status === 'ok' && !r.b.addon && !r.b.verify && (!amt || !r.x || worth(r.x) > 0)) || null;
     }
 
+    // ───── 결제 계획: 한 곳에서 쓸 금액을 여러 번(카드)으로 나눠 낼 때 가장 많이 아끼는 조합 ─────
+    // 할인율 구간(3만원 미만 30% 등)·건당 최대·남은 한도를 보고 나눌 금액 후보를 만든 뒤,
+    // 앞 결제를 가상으로 기록해가며 최대 max번까지 나눠 계산. 결제를 한 번 더 나누려면 PLAN_GAIN원 이상 더 아껴야 함
+    const PLAN_STEP = 100;
+    const PLAN_GAIN = 100;
+    const up = (n) => Math.ceil(n / PLAN_STEP) * PLAN_STEP;
+    function planCands(b, R) {
+      const c = b.calc;
+      const set = new Set([R]);
+      const add = (a) => { if (a > 0 && a < R) set.add(Math.round(a)); };
+      const tiers = (c.tiers || []).concat((c.days && c.days.tiers) || []);
+      const marks = [...new Set([0, ...tiers.map(([m]) => m), ...(c.steps || []).map(([m]) => m)])];
+      marks.forEach((m) => { add(m); add(m - PLAN_STEP); });
+      if (c.min) add(c.min);
+      const eb = b.extra && BENEFIT[b.extra];
+      if (eb && eb.calc && eb.calc.min) add(eb.calc.min); // 중복 혜택 조건 금액 (IBK PX 특별할인 20만원)
+      if (c.below) add(c.below - PLAN_STEP);
+      if (c.capUnder) add(c.capUnder[0] - PLAN_STEP);
+      (b.lim || []).forEach((r) => { if (r.under) add(r.under - PLAN_STEP); if (r.over) add(r.over); });
+      // 건당 최대·남은 한도를 딱 채우는 금액 (그 이상은 더 내도 할인이 안 늘어남)
+      marks.forEach((m) => {
+        const at = Math.max(m, c.min || 0, PLAN_STEP);
+        const rates = tiers.filter(([mm]) => mm <= at).map(([, p]) => p).concat(c.weekend || []).filter((p) => p > 0);
+        let room = remaining(b, at).rem;
+        if (c.cap) room = Math.min(room, c.cap);
+        if (c.capUnder && at < c.capUnder[0]) room = Math.min(room, c.capUnder[1]);
+        if (!isFinite(room)) return;
+        rates.forEach((p) => add(up((room * 100) / p)));
+      });
+      return [...set].sort((a, b2) => b2 - a);
+    }
+
+    function plan(list, total, max = 3) {
+      const pool = list.filter((b) => b.calc && !b.calc.ticket && !b.addon && !b.verify);
+      const pay = (b, amt) => {
+        if (evaluate(b, amt).status !== 'ok') return null;
+        const x = estimate(b, amt);
+        return x && x.v > 0 ? { b, amt, x, w: worth(x) } : null;
+      };
+      const bestFor = (R) => {
+        let p = null;
+        pool.forEach((b) => { const q = pay(b, R); if (q && (!p || q.w > p.w)) p = q; });
+        return p || { b: null, amt: R, x: null, w: 0 };
+      };
+      if (!total || total <= 0) return null;
+      const t = now();
+      let best = null;
+      const consider = (pays) => {
+        const w = pays.reduce((s, p) => s + p.w, 0);
+        const score = w - PLAN_GAIN * (pays.length - 1);
+        if (!best || score > best.score) best = { pays, w, score };
+      };
+      const hold = (p) => virtual.push({ id: 'plan', ts: t, card: p.b.card, amt: p.amt, items: txItems(p.b, p.x) });
+      const prev = virtual;
+      virtual = [];
+      let single;
+      try {
+        single = bestFor(total);
+        // 후보가 너무 많으면(넓은 검색어) 계산량을 줄이려고 2번까지만 나눔
+        const size = pool.reduce((s, b) => s + planCands(b, total).length, 0);
+        const depthMax = size > 60 ? Math.min(max, 2) : max;
+        const dfs = (R, pays, start) => {
+          consider(pays.concat(bestFor(R)));
+          if (pays.length + 1 >= depthMax) return;
+          pool.forEach((b, i) => {
+            if (i < start) return;
+            planCands(b, R).forEach((a) => {
+              if (a >= R) return;
+              const p = pay(b, a);
+              if (!p) return;
+              hold(p);
+              dfs(R - a, pays.concat(p), i);
+              virtual.pop();
+            });
+          });
+        };
+        dfs(total, [], 0);
+      } finally {
+        virtual = prev;
+      }
+      return { total, pays: best.pays, saved: best.w, single, gain: best.w - single.w };
+    }
+
     return {
       CARD, SECTOR, BANK, BENEFIT, NEEDS, TICKET_PRICE,
       ymd, thisMonth, addMonth, won, man, norm,
       spendOf, spendStale, firstActive, cardLimit, pooledUsed, usage, remaining,
       needStatus, evaluate, estimate, search, rank, bestOf, keyOf, effective, limitBreakdown,
+      txItems, unitOf, plan, worth,
     };
   }
 
