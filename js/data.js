@@ -37,6 +37,12 @@
  *  calc.days : { dates: ['MM-DD'] 또는 dom: [매월 n일], tiers } 그날만 다른 할인율
  *  ticket    : 결제 총액 ÷ 입력한 매수로 1매 가격 계산
  *
+ *  route    : 결제 경로·대상 조건 { channel: ['offline'|'app'|'pay'], promo: true } — 사용자가 고른 경로와 비교,
+ *             모르면 확정 혜택처럼 합산하지 않음 (추가 혜택이면 '조건 충족 시'로 분리)
+ *  fallback : 이 혜택의 횟수·한도를 다 썼을 때 대신 적용되는 혜택 id, fallbackIf 경로에서만 (신한 GS25 해군마트 → Life 편의점)
+ *
+ * SECTORS.terms : 업종 검색어 — 이 말로 검색하면 업종 전체 혜택을, 그 밖의 말은 특정 가맹점으로 보고 해당 가맹점 혜택만 보여줌
+ *
  * card.first : 신규 발급(첫 사용 등록 월~다음 달) 실적 인정 { spend, limit?, groups, except? }
  * card.source: 출처 문서와 기준 월, 공식 URL
  */
@@ -103,24 +109,24 @@
   ];
 
   const SECTORS = [
-    { id: 'px', name: '군마트·PX', icon: '🪖', kw: 'px 피엑스 군마트 마트 해군마트 충성마트 영외마트' },
-    { id: 'store', name: '편의점', icon: '🏪', kw: '편의점 씨유 지에스 gs25 cu 이마트24 emart24' },
-    { id: 'cafe', name: '카페', icon: '☕', kw: '커피 카페 스벅' },
-    { id: 'food', name: '외식', icon: '🍔', kw: '밥 식당 패스트푸드 햄버거 레스토랑 패밀리레스토랑' },
-    { id: 'delivery', name: '배달', icon: '🛵', kw: '배달 배민 요기요 쿠팡이츠' },
-    { id: 'transit', name: '버스·지하철', icon: '🚌', kw: '대중교통 버스 지하철 후불교통 교통' },
-    { id: 'taxi', name: '택시', icon: '🚕', kw: '택시 카카오택시 카카오t' },
-    { id: 'train', name: '기차·고속버스', icon: '🚄', kw: 'ktx srt 기차 열차 고속버스 시외버스 광역교통 휴가 복귀' },
-    { id: 'movie', name: '영화', icon: '🎬', kw: '영화 영화관 cgv 씨지비' },
-    { id: 'park', name: '놀이공원', icon: '🎢', kw: '놀이공원 테마파크 에버랜드 롯데월드' },
-    { id: 'shop', name: '쇼핑', icon: '🛍️', kw: '쇼핑 온라인 쇼핑몰 옷' },
-    { id: 'digital', name: 'OTT·구독', icon: '📺', kw: 'ott 구독 넷플 유튭 유튜브 게임 앱스토어 음악' },
-    { id: 'telecom', name: '통신', icon: '📱', kw: '통신 휴대폰 핸드폰 요금 공중전화' },
-    { id: 'study', name: '도서·어학', icon: '📚', kw: '책 서점 토익 어학 시험 자격증 공부' },
-    { id: 'travel', name: '해외·여행', icon: '✈️', kw: '해외 여행 공항 라운지 숙소 렌터카' },
-    { id: 'welfare', name: '군 복지시설', icon: '🏨', kw: '콘도 호텔 체력단련장 골프 휴양시설 복지' },
-    { id: 'life', name: '생활·기타', icon: '🎁', kw: '병원 약국 스포츠 헬스 멤버십 경조사' },
-    { id: 'finance', name: '보험·금융', icon: '🛡️', kw: '보험 상해 수수료 atm 이체 휴대폰파손' },
+    { id: 'px', name: '군마트·PX', icon: '🪖', kw: 'px 피엑스 군마트 마트 해군마트 충성마트 영외마트', terms: ['px', '피엑스', '군마트', '해군마트', 'gs25해군마트', '해군gs25', '충성마트', '영외마트', '군매점', '군부대마트'] },
+    { id: 'store', name: '편의점', icon: '🏪', kw: '편의점 씨유 지에스 gs25 cu 이마트24 emart24', terms: ['편의점'] },
+    { id: 'cafe', name: '카페', icon: '☕', kw: '커피 카페 스벅', terms: ['카페', '커피', '커피전문점'] },
+    { id: 'food', name: '외식', icon: '🍔', kw: '밥 식당 패스트푸드 햄버거 레스토랑 패밀리레스토랑', terms: ['외식', '식당', '레스토랑', '패밀리레스토랑', '패스트푸드', '햄버거'] },
+    { id: 'delivery', name: '배달', icon: '🛵', kw: '배달 배민 요기요 쿠팡이츠', terms: ['배달', '배달앱', '배달음식'] },
+    { id: 'transit', name: '버스·지하철', icon: '🚌', kw: '대중교통 버스 지하철 후불교통 교통', terms: ['대중교통', '버스', '지하철', '교통', '후불교통'] },
+    { id: 'taxi', name: '택시', icon: '🚕', kw: '택시 카카오택시 카카오t', terms: ['택시'] },
+    { id: 'train', name: '기차·고속버스', icon: '🚄', kw: 'ktx srt 기차 열차 고속버스 시외버스 광역교통 휴가 복귀', terms: ['기차', '열차', '광역교통'] },
+    { id: 'movie', name: '영화', icon: '🎬', kw: '영화 영화관 cgv 씨지비', terms: ['영화', '영화관'] },
+    { id: 'park', name: '놀이공원', icon: '🎢', kw: '놀이공원 테마파크 에버랜드 롯데월드', terms: ['놀이공원', '테마파크'] },
+    { id: 'shop', name: '쇼핑', icon: '🛍️', kw: '쇼핑 온라인 쇼핑몰 옷', terms: ['쇼핑', '온라인쇼핑', '쇼핑몰'] },
+    { id: 'digital', name: 'OTT·구독', icon: '📺', kw: 'ott 구독 넷플 유튭 유튜브 게임 앱스토어 음악', terms: ['ott', '구독', '스트리밍'] },
+    { id: 'telecom', name: '통신', icon: '📱', kw: '통신 휴대폰 핸드폰 요금 공중전화', terms: ['통신', '통신비', '통신요금', '휴대폰요금', '핸드폰요금'] },
+    { id: 'study', name: '도서·어학', icon: '📚', kw: '책 서점 토익 어학 시험 자격증 공부', terms: ['서점', '도서', '책', '어학', '어학시험'] },
+    { id: 'travel', name: '해외·여행', icon: '✈️', kw: '해외 여행 공항 라운지 숙소 렌터카', terms: ['해외', '여행', '해외결제'] },
+    { id: 'welfare', name: '군 복지시설', icon: '🏨', kw: '콘도 호텔 체력단련장 골프 휴양시설 복지', terms: ['복지시설', '군복지시설', '휴양시설', '체력단련장'] },
+    { id: 'life', name: '생활·기타', icon: '🎁', kw: '병원 약국 스포츠 헬스 멤버십 경조사', terms: [] },
+    { id: 'finance', name: '보험·금융', icon: '🛡️', kw: '보험 상해 수수료 atm 이체 휴대폰파손', terms: ['보험', '수수료'] },
   ];
 
   // 국군의날(10.1)·현충일(6.6)
@@ -132,10 +138,13 @@
   const ym = (t) => { const d = new Date(t); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; };
   const IBK_PAID = (s, t) => s.salary === 'ibk' && !((s.since || {}).salary >= ym(t));
 
-  const IBK_PX_PERSONAL = (s) => {
-    if (s.salary === 'ibk') return '내 조건: IBK 급여이체자 → 3만원 미만 월 6회, 3만원 이상 횟수 제한 없음, 특별할인 연 2회';
-    if ((s.savings || []).includes('ibk')) return '내 조건: IBK 장병내일준비적금 보유 → 현역병 인정 (3만원 미만 월 3회, 3만원 이상 월 2회, 특별할인 연 1회)';
-    return 'IBK 장병내일준비적금이 있거나 복무확인서 제출 시 현역병 인정, IBK로 급여이체하면 횟수가 늘어나요';
+  // 안내 문구도 계산과 같은 기준(IBK_PAID: 급여이체 시작 다음 달부터)을 씀
+  const IBK_PX_PERSONAL = (s, t = Date.now()) => {
+    if (IBK_PAID(s, t)) return '내 조건: IBK 급여이체자 → 3만원 미만 월 6회, 3만원 이상 횟수 제한 없음, 특별할인 연 2회';
+    const soon = s.salary === 'ibk' ? ' · IBK 급여이체는 다음 달부터 우대 횟수(3만원 미만 월 6회, 3만원 이상 무제한, 특별할인 연 2회) 적용' : '';
+    if ((s.savings || []).includes('ibk')) return '내 조건: IBK 장병내일준비적금 보유 → 현역병 인정 (3만원 미만 월 3회, 3만원 이상 월 2회, 특별할인 연 1회)' + soon;
+    if (s.salary === 'ibk') return '이번 달은 IBK 급여이체가 아직 인정되지 않아요' + soon;
+    return 'IBK 장병내일준비적금이 있거나 복무확인서·건강보험자격득실확인서를 제출하면 현역병 인정, IBK로 급여이체하면 다음 달부터 횟수가 늘어나요';
   };
 
   const B = [
@@ -148,7 +157,7 @@
       where: '쿠팡, 네이버플러스스토어', kw: '네이버쇼핑 스마트스토어', rate: 20, value: '20%', type: '캐시백',
       limit: '월 3천원 · 일 1천원', calc: { tiers: [[0, 20]], cap: 1000 },
       notes: ['공식 홈페이지·앱 결제만 해당', '다른 사이트로 연결된 결제, 오프라인, 상품권·여행·항공권·티켓·도서·공연 제외'] },
-    { id: 'hana-cu', ctx: ['CU 행사품목만'], card: 'hana', sector: 'store', group: 'Easy · 실적 무관', title: 'CU 행사품목 현장할인',
+    { id: 'hana-cu', ctx: ['CU 행사품목만'], route: { promo: true }, card: 'hana', sector: 'store', group: 'Easy · 실적 무관', title: 'CU 행사품목 현장할인',
       where: 'CU 행사품목', kw: '씨유', rate: 10, value: '10%', type: '현장할인',
       limit: '월 5만원 / 국군의날·현충일엔 30% (일 5만원)', calc: { tiers: [[0, 10]], days: { dates: MIL_DAYS, tiers: [[0, 30]] } },
       lim: [{ notDays: MIL_DAYS, month: 50000 }, { days: MIL_DAYS, day: 50000 }],
@@ -361,7 +370,7 @@
       limit: '인강 30% · 라이브 20% · 어학원 10%', until: '2026-12-31', notes: ['해커스 인강 사이트 로그인 후 카드 인증'] },
 
     // ───────────────────────── 신한 ─────────────────────────
-    { id: 'shinhan-px', ctx: ['GS25는 군부대 안 해군마트만 (일반 GS25는 편의점 혜택)'], card: 'shinhan', sector: 'px', group: '슈퍼쏠저 · 실적 무관', title: 'PX 캐시백 (매월 10일 3만원 미만 50%)', lim: [{ under: 30000, dayCount: 1 }, { month: 100000 }],
+    { id: 'shinhan-px', ctx: ['GS25는 군부대 안 해군마트만 (일반 GS25는 편의점 혜택)'], fallback: 'shinhan-store', fallbackIf: { px: 'navy' }, card: 'shinhan', sector: 'px', group: '슈퍼쏠저 · 실적 무관', title: 'PX 캐시백 (매월 10일 3만원 미만 50%)', lim: [{ under: 30000, dayCount: 1 }, { month: 100000 }],
       where: '군마트(PX), GS25 해군마트', rate: 20, value: '20%', type: '캐시백',
       limit: '20% (매월 10일은 3만원 미만 50%) · 3만원 미만은 일 1회 최대 1천원 · 월 최대 10만원',
       calc: { tiers: [[0, 20]], capUnder: [30000, 1000], days: { dom: [10], tiers: [[0, 50], [30000, 20]] } },
@@ -383,7 +392,7 @@
     { id: 'shinhan-taxi', ctx: ['카카오T 앱 안에서 카드 결제 (카카오페이·현장결제 제외)'], card: 'shinhan', sector: 'taxi', group: 'Life · 전월 10만원', title: '카카오T 택시 캐시백', lim: [{ month: 2000 }],
       where: '카카오T 앱 내 카드결제 (택시)', kw: '카카오택시', rate: 10, value: '10%', type: '캐시백', limit: '월 2천원',
       req: { spend: 100000, pooled: true }, calc: { tiers: [[0, 10]], cap: 2000 }, notes: ['현장결제, 카카오페이 결제, 대리·주차·바이크 제외'] },
-    { id: 'shinhan-store', ctx: ['오프라인 매장 결제 (앱·입점 매장 제외)'], card: 'shinhan', sector: 'store', group: 'Life · 전월 10만원', title: '편의점 캐시백', lim: [{ dayCount: 1, monthCount: 5 }],
+    { id: 'shinhan-store', ctx: ['오프라인 매장 결제 (앱·입점 매장 제외)'], route: { channel: ['offline'] }, card: 'shinhan', sector: 'store', group: 'Life · 전월 10만원', title: '편의점 캐시백', lim: [{ dayCount: 1, monthCount: 5 }],
       where: 'GS25, CU (오프라인)', kw: '씨유', rate: 20, value: '20%', type: '캐시백', limit: '일 1회 1천원 · 월 5회 5천원',
       req: { spend: 100000, pooled: true }, calc: { tiers: [[0, 20]], cap: 1000 }, notes: ['앱/웹 결제, 백화점·공항 등 입점 매장 제외'] },
     { id: 'shinhan-coffee', ctx: ['오프라인 매장 결제 (스타벅스 사이렌오더는 가능)'], card: 'shinhan', sector: 'cafe', group: 'Life · 전월 10만원', title: '커피 캐시백', lim: [{ dayCount: 1, monthCount: 3 }],
@@ -429,7 +438,7 @@
     { id: 'shinhan-overseas', card: 'shinhan', sector: 'travel', group: 'Special · 실적 무관', title: '해외이용 캐시백',
       where: '해외 가맹점 (VISA 해외겸용 카드)', kw: '해외결제', rate: 1, value: '1%', type: '캐시백',
       calc: { tiers: [[0, 1]] }, notes: ['해외 현금인출 제외', '해외 사이트가 국내 PG로 결제되면 제외'] },
-    { id: 'shinhan-cu', extra: 'shinhan-store', extraAfter: true, ctx: ['CU 행사상품만, 신한카드 단독 결제'], card: 'shinhan', sector: 'store', group: 'Special · 실적 무관', title: 'CU 행사상품 즉시할인', lim: [{ month: 5000 }],
+    { id: 'shinhan-cu', extra: 'shinhan-store', extraAfter: true, ctx: ['CU 행사상품만, 신한카드 단독 결제'], route: { channel: ['offline', 'app'], promo: true }, card: 'shinhan', sector: 'store', group: 'Special · 실적 무관', title: 'CU 행사상품 즉시할인', lim: [{ month: 5000 }],
       where: 'CU 행사상품 (오프라인·포켓CU)', kw: '씨유', rate: 10, value: '10%', type: '현장할인', limit: '월 5천원',
       calc: { tiers: [[0, 10]] }, notes: ['즉시할인 후 남은 금액에 편의점 20% 캐시백이 추가로 적용돼요 (예: 5천원 → 500원 할인 + 900원 캐시백)', '휴게소·공항·병원 입점 매장 제외'] },
     { id: 'shinhan-lg', lim: [{ year: 100000 }], card: 'shinhan', sector: 'life', group: 'Multi Membership', title: 'LG전자 1% 포인트',

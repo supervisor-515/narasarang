@@ -1,8 +1,7 @@
 // 앱 파일을 바꾸면 VERSION을 올려야 사용자 기기에 새 버전이 반영됩니다.
-const VERSION = 'v16';
+const VERSION = 'v18';
 const PREFIX = 'narasarang-';
 const CACHE = PREFIX + VERSION;
-const TIMEOUT = 4000; // 네트워크가 이보다 느리면 저장된 파일로 응답
 const SHELL = [
   './',
   'index.html',
@@ -37,48 +36,37 @@ self.addEventListener('activate', (e) => {
   );
 });
 
-function fromCache(req) {
-  return caches.open(CACHE)
-    .then((c) => c.match(req, { ignoreSearch: true })
-      .then((hit) => hit || (req.mode === 'navigate' ? c.match('index.html') : undefined)));
-}
+const SHELL_URLS = new Set(SHELL.map((u) => new URL(u, self.registration.scope).href));
 
-// 앱 파일: 네트워크 우선(항상 최신) → 오프라인·지연·서버 오류면 저장된 파일
-// 외부 파일(폰트): 캐시 우선
+// 앱 파일(SHELL): 이 버전 캐시에서만 응답 → data.js·engine.js·app.js가 항상 같은 릴리스로 맞춰짐
+//   (새 버전은 sw.js의 VERSION이 바뀌면 install에서 전부 새로 받아 한꺼번에 교체)
+// 그 밖의 같은 도메인 파일: 네트워크 우선, 오프라인이면 저장된 파일
 self.addEventListener('fetch', (e) => {
   const req = e.request;
   if (req.method !== 'GET') return;
-  const sameOrigin = new URL(req.url).origin === self.location.origin;
+  const url = new URL(req.url);
+  if (url.origin !== self.location.origin) return;
+  url.search = '';
+  url.hash = '';
+  const isShell = req.mode === 'navigate' || SHELL_URLS.has(url.href);
 
-  if (sameOrigin) {
-    e.respondWith(new Promise((resolve) => {
-      let done = false;
-      const fallback = (res) => fromCache(req).then((hit) => { if (!done) { done = true; resolve(hit || res || Response.error()); } });
-      const timer = setTimeout(() => fallback(), TIMEOUT);
-      fetch(req, { cache: 'no-cache' })
-        .then((res) => {
-          if (res && res.ok) {
-            const copy = res.clone();
-            caches.open(CACHE).then((c) => c.put(req, copy));
-            clearTimeout(timer);
-            if (!done) { done = true; resolve(res); }
-          } else {
-            clearTimeout(timer);
-            fallback(res); // 5xx 등은 저장된 파일이 있으면 그걸로
-          }
-        })
-        .catch(() => { clearTimeout(timer); fallback(); });
+  if (isShell) {
+    e.respondWith(caches.open(CACHE).then(async (c) => {
+      const hit = (await c.match(url.href)) || (req.mode === 'navigate' ? await c.match(new URL('index.html', self.registration.scope).href) : undefined);
+      if (hit) return hit;
+      const res = await fetch(req);
+      if (res && res.ok) c.put(url.href, res.clone());
+      return res;
     }));
     return;
   }
 
   e.respondWith(
-    caches.open(CACHE).then(async (cache) => {
-      const hit = await cache.match(req);
-      if (hit) return hit;
-      const res = await fetch(req);
-      if (res && (res.ok || res.type === 'opaque')) cache.put(req, res.clone());
-      return res;
-    })
+    fetch(req, { cache: 'no-cache' })
+      .then((res) => {
+        if (res && res.ok) { const copy = res.clone(); caches.open(CACHE).then((c) => c.put(req, copy)); }
+        return res;
+      })
+      .catch(() => caches.open(CACHE).then((c) => c.match(req, { ignoreSearch: true })).then((hit) => hit || Response.error()))
   );
 });

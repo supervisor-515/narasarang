@@ -21,12 +21,12 @@ function test(name, fn) {
 }
 
 // 날짜·설정·기록을 고정한 엔진
-function setup({ s = {}, ledger = [], date = '2026-10-15T12:00:00', tickets = 1 } = {}) {
-  const st = { now: new Date(date).getTime(), tickets };
+function setup({ s = {}, ledger = [], date = '2026-10-15T12:00:00', tickets = 1, route = {} } = {}) {
+  const st = { now: new Date(date).getTime(), tickets, route };
   const S = Object.assign({ cards: [], salary: null, savings: [], spend: {}, spendAt: {}, firstUse: {}, soldier: null, checks: {} }, s);
   Object.keys(S.spend).forEach((k) => { if (!S.spendAt[k]) S.spendAt[k] = date.slice(0, 7); });
-  const E = Engine.create(DATA, { getS: () => S, getLedger: () => ledger, now: () => st.now, getInput: () => ({ tickets: st.tickets }) });
-  return { E, S, ledger, setDate: (d) => { st.now = new Date(d).getTime(); }, setTickets: (n) => { st.tickets = n; } };
+  const E = Engine.create(DATA, { getS: () => S, getLedger: () => ledger, now: () => st.now, getInput: () => ({ tickets: st.tickets }), getRoute: () => st.route });
+  return { E, S, ledger, setDate: (d) => { st.now = new Date(d).getTime(); }, setTickets: (n) => { st.tickets = n; }, setRoute: (r) => { st.route = r; } };
 }
 const B = (id) => { const b = DATA.BENEFITS.find((x) => x.id === id); assert(b, 'no benefit ' + id); return b; };
 const tx = (date, card, amt, items) => ({ id: 't' + date + card + amt, ts: new Date(date).getTime(), card, amt, items });
@@ -202,13 +202,30 @@ test('신한 테마파크: 에버랜드 3회 써도 롯데월드는 가능', () 
   assert.strictEqual(E.evaluate(B('shinhan-park-lotte'), 60000).status, 'ok');
 });
 
-test('신한 CU 행사상품 5,000원: 500원 즉시할인 + 남은 4,500원의 20% 900원 = 1,400원', () => {
-  const { E } = setup({ s: { cards: ['shinhan'], spend: { shinhan: 200000 } } });
+test('신한 CU 행사상품 5,000원 매장 결제: 500원 즉시할인 + 남은 4,500원의 20% 900원 = 1,400원', () => {
+  // 기대값 유지, 조건만 명시: Life 편의점 캐시백은 오프라인 매장 결제만 (신한 상품설명서)
+  const { E } = setup({ s: { cards: ['shinhan'], spend: { shinhan: 200000 } }, route: { channel: 'offline', promo: 'all' } });
   const x = E.estimate(B('shinhan-cu'), 5000);
   assert.strictEqual(x.v, 1400);
   assert.strictEqual(x.extra.v, 900);
   const best = E.bestOf(E.rank(E.search('CU'), 5000), 5000);
   assert.strictEqual(best.b.id, 'shinhan-cu');
+});
+
+test('신한 CU: 결제 경로를 모르면 Life 캐시백을 합산하지 않고 조건부로 분리, 포켓CU(앱)면 제외', () => {
+  const env = setup({ s: { cards: ['shinhan'], spend: { shinhan: 200000 } } });
+  let x = env.E.estimate(B('shinhan-cu'), 5000);
+  assert.strictEqual(x.v, 500);
+  assert.strictEqual(x.condExtra.v, 900);
+  assert.deepStrictEqual(env.E.evaluate(B('shinhan-cu'), 5000).route.sort(), ['channel', 'promo']);
+  env.setRoute({ channel: 'app', promo: 'all' }); // 포켓CU 결제
+  x = env.E.estimate(B('shinhan-cu'), 5000);
+  assert.strictEqual(x.v, 500);
+  assert(!x.extra && !x.condExtra);
+  assert.strictEqual(env.E.evaluate(B('shinhan-store'), 5000).status, 'no');
+  env.setRoute({ promo: 'none' });
+  assert.strictEqual(env.E.evaluate(B('shinhan-cu'), 5000).status, 'no');
+  assert.strictEqual(setup({ route: { promo: 'none' } }).E.evaluate(B('hana-cu'), 5000).status, 'no');
 });
 
 test('급여이체는 이번 달 시작이면 다음 달부터 인정', () => {
@@ -336,6 +353,131 @@ test('기록 검증: 음수·빈 항목·모르는 카드는 거부', () => {
   assert(!Engine.isTx(DATA, Object.assign({}, ok, { items: [{ b: 'ibk-npay', k: 'ibk-npay', v: -5 }] })));
 });
 
+console.log('검색·경로');
+
+const ids_ = (list) => list.map((b) => b.id);
+test('업종 검색: ‘카페’는 카드별 커피 혜택과 IBK 메가커피까지 모두', () => {
+  const { E } = setup();
+  const r = ids_(E.search('카페'));
+  ['ibk-aio-cafe', 'hana-starbucks', 'kb-starbucks', 'shinhan-coffee', 'ibk-mega'].forEach((id) => assert(r.includes(id), id));
+  assert.deepStrictEqual(ids_(E.search('커피')).sort(), r.sort());
+});
+
+test('업종 검색: ‘편의점’은 CU 행사상품 혜택까지, PX는 제외', () => {
+  const { E } = setup();
+  const r = ids_(E.search('편의점'));
+  ['hana-cu', 'shinhan-cu', 'shinhan-store', 'ibk-store-nara', 'ibk-gs25-extra'].forEach((id) => assert(r.includes(id), id));
+  assert(!E.search('편의점').some((b) => b.sector === 'px'));
+});
+
+test('‘해군마트’·‘GS25 해군마트’ 검색에 하나 PX 포함 (하나는 해군·해병대 군마트 포함)', () => {
+  const { E } = setup();
+  ['해군마트', 'GS25 해군마트', 'PX'].forEach((q) => {
+    const r = ids_(E.search(q));
+    ['hana-px', 'ibk-px-basic', 'shinhan-px', 'kb-px'].forEach((id) => assert(r.includes(id), q + ' ' + id));
+  });
+});
+
+test('특정 가맹점 검색: 스타벅스에는 메가커피 전용 혜택이 섞이지 않음, 일반 GS25엔 PX 없음', () => {
+  const { E } = setup();
+  const r = ids_(E.search('스타벅스'));
+  assert(r.includes('hana-starbucks') && r.includes('shinhan-coffee'));
+  assert(!r.includes('ibk-mega'));
+  assert(!E.search('GS25').some((b) => b.sector === 'px'));
+  assert(ids_(E.search('메가커피')).includes('ibk-mega'));
+});
+
+test('보유 카드를 먼저 거르고 검색: 신한만 있으면 ‘스타벅스’에 신한 커피 혜택', () => {
+  const { E } = setup({ s: { cards: ['shinhan'] } });
+  assert.deepStrictEqual(ids_(E.search('스타벅스', ['shinhan'])), ['shinhan-coffee']);
+  assert(ids_(E.search('하나 스타벅스')).every((id) => id.startsWith('hana')));
+});
+
+test('신한 GS25 해군마트: 같은 날 1만원(PX 1천원) 후 6천원은 Life 편의점 20% 1천원 (공식 예시)', () => {
+  const ledger = [];
+  const env = setup({ s: { cards: ['shinhan'], spend: { shinhan: 200000 } }, ledger, route: { px: 'navy' } });
+  const x1 = env.E.estimate(B('shinhan-px'), 10000);
+  assert.strictEqual(x1.v, 1000);
+  ledger.push({ id: 'a', ts: new Date('2026-10-15T10:00:00').getTime(), card: 'shinhan', amt: 10000, items: env.E.txItems(B('shinhan-px'), x1) });
+  const x2 = env.E.estimate(B('shinhan-px'), 6000);
+  assert.strictEqual(x2.v, 1000);
+  assert.strictEqual(x2.fallback.id, 'shinhan-store');
+  assert.strictEqual(env.E.evaluate(B('shinhan-px'), 6000).status, 'ok');
+  const items = env.E.txItems(B('shinhan-px'), x2);
+  assert.deepStrictEqual(items.map((i) => [i.b, i.k, i.pooled]), [['shinhan-store', 'shinhan-store', true]]);
+});
+
+test('신한 해군마트 대체: 일반 PX·경로 모름·Life 실적 미달이면 대체 안 함, 한 결제의 1천원 초과분엔 안 붙음', () => {
+  const ledger = [tx('2026-10-15T10:00:00', 'shinhan', 10000, [{ b: 'shinhan-px', k: 'shinhan-px', v: 1000 }])];
+  const env = setup({ s: { cards: ['shinhan'], spend: { shinhan: 200000 } }, ledger, route: { px: 'general' } });
+  assert.strictEqual(env.E.estimate(B('shinhan-px'), 6000).v, 0);
+  assert.strictEqual(env.E.evaluate(B('shinhan-px'), 6000).status, 'no');
+  env.setRoute({});
+  assert.strictEqual(env.E.estimate(B('shinhan-px'), 6000).v, 0);
+  const low = setup({ s: { cards: ['shinhan'], spend: { shinhan: 50000 } }, ledger, route: { px: 'navy' } });
+  assert.strictEqual(low.E.estimate(B('shinhan-px'), 6000).v, 0);
+  const fresh = setup({ s: { cards: ['shinhan'], spend: { shinhan: 200000 } }, route: { px: 'navy' } });
+  const x = fresh.E.estimate(B('shinhan-px'), 20000); // 20% 4천원이지만 1회 1천원 — 초과분에 Life 추가 없음
+  assert.strictEqual(x.v, 1000);
+  assert(!x.fallback && !x.extra);
+});
+
+test('추천 이유: 다른 카드가 횟수를 다 썼으면 이유로 표시, 차선 카드 제시', () => {
+  const ledger = [tx('2026-10-15T09:00:00', 'kb', 10000, [{ b: 'kb-px', k: 'kb-px', v: 1000 }]), tx('2026-10-14T09:00:00', 'kb', 10000, [{ b: 'kb-px', k: 'kb-px', v: 1000 }])];
+  const { E } = setup({ s: { soldier: true }, ledger });
+  const rows = E.rank(E.search('PX'), 20000);
+  const ex = E.explain(rows, 20000);
+  assert.strictEqual(ex.top.b.id, 'hana-px');
+  assert(/오늘 남은 한도/.test(ex.lines[0]), ex.lines[0]);
+  assert(ex.lines.some((l) => /KB는 .*2회 모두 사용/.test(l)), ex.lines.join('|'));
+  assert(ex.alt && ex.alt.b.card !== 'hana');
+});
+
+console.log('남은 한도 직접 맞추기');
+
+test('통합한도 맞추기: 맞춘 시점 이전 기록은 다시 빼지 않고, 이후 기록만 차감, 이후 기록 취소는 복원', () => {
+  const at = new Date('2026-10-15T10:00:00').getTime();
+  const ledger = [tx('2026-10-14T09:00:00', 'hana', 30000, [{ b: 'hana-starbucks', k: 'hana-starbucks', v: 3000, pooled: true }])];
+  const s = { cards: ['hana'], spend: { hana: 300000 }, adjust: [{ id: 'a1', card: 'hana', key: 'pooled', ri: -1, kind: 'month', left: 10000, at }] };
+  const env = setup({ s, ledger });
+  assert.strictEqual(env.E.pooledState('hana', 20000).left, 10000); // 3,000원 이전 기록을 또 빼지 않음
+  ledger.push(tx('2026-10-15T11:00:00', 'hana', 20000, [{ b: 'hana-starbucks', k: 'hana-starbucks', v: 2000, pooled: true }]));
+  assert.strictEqual(env.E.pooledState('hana', 20000).left, 8000);
+  assert.strictEqual(env.E.remaining(B('hana-family'), 50000).rem, 8000);
+  ledger.pop(); // 이후 기록 취소 → 정확히 복원
+  assert.strictEqual(env.E.pooledState('hana', 20000).left, 10000);
+  env.setDate('2026-11-02T12:00:00'); // 달이 바뀌면 맞춘 값 효력 없음
+  assert.strictEqual(env.E.pooledState('hana', 20000).left, 20000);
+});
+
+test('혜택별 횟수 맞추기: IBK PX 3만원 미만 남은 1회 → 이후 1회 쓰면 소진, 통합한도와 독립', () => {
+  const at = new Date('2026-10-15T10:00:00').getTime();
+  const ledger = [];
+  const s = { cards: ['ibk'], savings: ['ibk'], adjust: [{ id: 'a2', card: 'ibk', key: 'ibk-px-basic', ri: 0, kind: 'monthCount', left: 1, at }] };
+  const env = setup({ s, ledger });
+  assert.strictEqual(env.E.evaluate(B('ibk-px-basic'), 20000).status, 'ok');
+  ledger.push(tx('2026-10-15T11:00:00', 'ibk', 20000, [{ b: 'ibk-px-basic', k: 'ibk-px-basic', v: 3000 }]));
+  assert.strictEqual(env.E.evaluate(B('ibk-px-basic'), 20000).status, 'no');
+  assert.strictEqual(env.E.evaluate(B('ibk-px-basic'), 50000).status, 'ok'); // 3만원 이상 구간은 따로
+  const g = env.E.limitBreakdown(B('ibk-px-basic')).find((x) => x.label.includes('미만')).items.find((i) => i.kind === 'monthCount');
+  assert.strictEqual(g.used, g.limit);
+  assert(g.adj);
+});
+
+test('일 한도 맞추기는 다음 날 효력 없음, 금액 맞추기는 남은 금액까지만 할인', () => {
+  const at = new Date('2026-10-15T09:00:00').getTime();
+  const s = { cards: ['hana'], adjust: [{ id: 'a3', card: 'hana', key: 'hana-px', ri: 0, kind: 'day', left: 1000, at }] };
+  const env = setup({ s });
+  assert.strictEqual(env.E.estimate(B('hana-px'), 10000).v, 1000);
+  env.setDate('2026-10-16T12:00:00');
+  assert.strictEqual(env.E.estimate(B('hana-px'), 10000).v, 3000);
+});
+
+test('잘못된 맞추기 값은 설정 불러오기에서 걸러냄', () => {
+  const r = Engine.sanitizeSettings(DATA, { adjust: [{ id: 'x', card: 'hana', key: 'pooled', ri: -1, kind: 'month', left: -5, at: 1 }, { id: 'y', card: 'zzz', key: 'pooled', ri: -1, kind: 'month', left: 5, at: 1 }, { id: 'z', card: 'kb', key: 'pooled', ri: -1, kind: 'month', left: 5, at: 10 }] });
+  assert.deepStrictEqual(r.adjust.map((a) => a.id), ['z']);
+});
+
 console.log('결제 계획');
 
 const PX_ALL = { soldier: true, savings: ['ibk'], spend: { hana: 300000, ibk: 300000, shinhan: 300000, kb: 300000 } };
@@ -387,6 +529,111 @@ test('결제 계획: 조건 확인이 필요한 혜택은 쓰지 않음', () => 
   assert(!p.pays.some((x) => x.b && x.b.id.startsWith('ibk-px')), ids(p));
 });
 
+test('나눠 결제 기준: 1회 더 나눌 때 660원 더 아끼는 PX 2만원 — 500원 기준이면 나누고 1,000원이면 한 번에', () => {
+  const { E } = setup({ s: PX_ALL });
+  const list = E.search('PX');
+  assert.strictEqual(E.plan(list, 20000, { max: 3, gain: 500 }).pays.length, 2);
+  const one = E.plan(list, 20000, { max: 3, gain: 1000 });
+  assert.strictEqual(one.pays.length, 1);
+  assert.strictEqual(one.saved, 5000);
+  // 추가 절약이 기준과 딱 같으면 나눔 (기준 '이상')
+  assert.strictEqual(E.plan(list, 20000, { max: 3, gain: 660 }).pays.length, 2);
+  assert.strictEqual(E.plan(list, 20000, { max: 3, gain: 661 }).pays.length, 1);
+});
+
+test('나눠 결제 횟수 제한: 간단하게(최대 2회)·최대 절약(3회)·한 번에(1회)', () => {
+  const { E } = setup({ s: PX_ALL });
+  const list = E.search('PX');
+  const two = E.plan(list, 250000, { max: 2, gain: 500 });
+  const three = E.plan(list, 250000, { max: 3, gain: 500 });
+  assert(two.pays.length <= 2 && three.pays.length <= 3);
+  assert(three.saved >= two.saved);
+  assert.strictEqual(E.plan(list, 250000, { max: 1 }).pays.length, 1);
+});
+
+test('나눠 결제: 절약액이 같으면 결제 횟수가 적은 조합', () => {
+  const { E } = setup({ s: PX_ALL });
+  const p = E.plan(E.search('PX'), 200000, { max: 3, gain: 0 });
+  assert.strictEqual(p.pays.length, 1, ids(p));
+});
+
+test('나눠 결제 계획: 총액 보존, 계획 순서대로 실제 기록해도 같은 혜택 (일·월·연 한도 초과 없음)', () => {
+  [20000, 50000, 80000, 150000, 250000, 400000].forEach((amt) => {
+    const ledger = [tx('2026-10-15T08:00:00', 'hana', 16700, [{ b: 'hana-px', k: 'hana-px', v: 4000 }])];
+    const { E } = setup({ s: Object.assign({ salary: 'ibk', since: { salary: '2026-08' } }, PX_ALL), ledger, date: '2026-10-15T12:00:00' });
+    const p = E.plan(E.search('PX'), amt, { max: 3, gain: 100 });
+    assert.strictEqual(p.pays.reduce((a, x) => a + x.amt, 0), amt, amt + ' 총액');
+    assert.strictEqual(ledger.length, 1, '가상 결제가 실제 기록에 남으면 안 됨');
+    p.pays.forEach((x, i) => {
+      if (!x.b) return;
+      const now = E.estimate(x.b, x.amt);
+      assert.strictEqual(now.v, x.x.v, `${amt} ${i}번째 ${x.b.id}`);
+      ledger.push({ id: 'p' + i, ts: new Date('2026-10-15T12:00:00').getTime(), card: x.b.card, amt: x.amt, items: E.txItems(x.b, now) });
+    });
+    // 기록 후 각 혜택 한도가 음수가 되지 않음
+    ['hana-px', 'ibk-px-basic', 'shinhan-px', 'kb-px'].forEach((id) => {
+      E.limitBreakdown(B(id)).forEach((g) => g.items.forEach((it) => assert(it.used <= it.limit, `${amt} ${id} ${it.kind} ${it.used}/${it.limit}`)));
+    });
+  });
+});
+
+test('IBK 급여이체 이번 달 시작: 계산(현역병 횟수)과 안내 문구가 같은 기준, 다음 달부터 우대', () => {
+  const s = { cards: ['ibk'], salary: 'ibk', savings: ['ibk'], since: { salary: '2026-10' } };
+  const b = B('ibk-px-basic');
+  const oct = new Date('2026-10-15T12:00:00').getTime();
+  const nov = new Date('2026-11-02T12:00:00').getTime();
+  assert(!/급여이체자 →/.test(b.personal(s, oct)), b.personal(s, oct));
+  assert(/다음 달부터/.test(b.personal(s, oct)));
+  assert(/급여이체자 →/.test(b.personal(s, nov)));
+  const env = setup({ s, date: '2026-10-15T12:00:00' });
+  assert.strictEqual(env.E.limitBreakdown(b).find((g) => g.label.includes('미만')).items.find((i) => i.kind === 'monthCount').limit, 3);
+  env.setDate('2026-11-02T12:00:00');
+  assert.strictEqual(env.E.limitBreakdown(b).find((g) => g.label.includes('미만')).items.find((i) => i.kind === 'monthCount').limit, 6);
+});
+
+console.log('백업·저장 데이터');
+
+const fixId = (x) => DATA.LEGACY_IDS[x] || x;
+test('백업 가져오기: 카드가 안 맞는 혜택·중복 id·잘못된 단위는 제외, 한도 키는 혜택 기준으로 정리, 금액은 그대로', () => {
+  const t0 = new Date('2026-10-01T12:00:00').getTime();
+  const list = [
+    { id: 'ok1', ts: t0, card: 'ibk', amt: 50000, items: [{ b: 'ibk-park', k: 'wrong-key', v: 12345, pooled: false, unit: 'won' }], edited: true, plan: 'p1' },
+    { id: 'ok1', ts: t0, card: 'ibk', amt: 50000, items: [{ b: 'ibk-park', k: 'ibk-park', v: 1, unit: 'won' }] }, // 중복 id
+    { id: 'bad1', ts: t0, card: 'hana', amt: 10000, items: [{ b: 'ibk-park', k: 'ibk-park', v: 100, unit: 'won' }] }, // 카드 불일치
+    { id: 'bad2', ts: t0, card: 'hana', amt: 10000, items: [{ b: 'hana-px', k: 'hana-px', v: 100, unit: 'usd' }] },
+    { id: 'bad3', ts: t0, card: 'hana', amt: 10000, items: [{ b: 'hana-px', k: 'hana-px', v: 100, pooled: 'yes' }] },
+    { id: 'old', ts: t0, card: 'hana', amt: 10000, items: [{ b: 'hana:Easy:군마트(PX) 캐시백', k: 'hana:Easy:군마트(PX) 캐시백', v: 3000 }] }, // 예전 id
+  ];
+  const r = Engine.cleanImportTx(DATA, list, fixId);
+  assert.deepStrictEqual(r.tx.map((t) => t.id), ['ok1', 'old']);
+  assert.strictEqual(r.dropped, 4);
+  assert.strictEqual(r.tx[0].items[0].k, 'ibk-park');
+  assert.strictEqual(r.tx[0].items[0].v, 12345); // 기록 당시 금액 유지
+  assert.strictEqual(r.tx[0].edited, true);
+  assert.strictEqual(r.tx[1].items[0].b, 'hana-px');
+});
+
+test('새 설정 항목(즐겨찾기·맞춘 한도·나눠 결제 기준) 왕복, 옛 설정은 기본값', () => {
+  const S1 = Engine.sanitizeSettings(DATA, { favs: [{ q: 'CU', route: { channel: 'offline', promo: 'maybe' } }, { q: 'cu' }, { q: '' }], splitGain: 1000 });
+  assert.strictEqual(JSON.stringify(S1.favs), JSON.stringify([{ q: 'CU', route: { channel: 'offline' } }]));
+  assert.strictEqual(S1.splitGain, 1000);
+  const S2 = Engine.sanitizeSettings(DATA, JSON.parse(JSON.stringify(S1)));
+  assert.strictEqual(JSON.stringify(S2), JSON.stringify(S1));
+  const old = Engine.sanitizeSettings(DATA, { cards: ['hana'], spend: { hana: 100000 } });
+  assert.strictEqual(JSON.stringify([old.favs, old.adjust, old.splitGain]), '[[],[],500]');
+});
+
+test('달·연 경계와 행사 종료: 같은 엔진에서 날짜가 바뀌면 다시 판정 (사용액 재입력·프로모션 종료)', () => {
+  const env = setup({ s: { cards: ['ibk', 'hana'], spend: { hana: 300000 } }, date: '2026-12-31T23:00:00' });
+  assert.strictEqual(env.E.evaluate(B('ibk-emart24'), 5000).status, 'ok');
+  assert.strictEqual(env.E.evaluate(B('hana-starbucks'), 20000).status, 'ok');
+  env.setDate('2027-01-01T09:00:00');
+  assert.strictEqual(env.E.evaluate(B('ibk-emart24'), 5000).status, 'no');
+  const st = env.E.evaluate(B('hana-starbucks'), 20000);
+  assert.strictEqual(st.status, 'check');
+  assert(/다시 입력/.test(st.why.join()));
+});
+
 console.log('배포 파일 검증');
 
 function pngSize(file) {
@@ -410,6 +657,10 @@ test('서비스워커가 앱 파일을 모두 캐시하고, 자기 캐시만 지
   const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
   [...html.matchAll(/src="(js\/[^"]+)"/g)].forEach((m) => assert(sw.includes(`'${m[1]}'`), m[1] + ' 캐시 목록에 없음'));
   assert(/k\.startsWith\(PREFIX\)/.test(sw), '캐시 삭제 범위 제한 없음');
+  // 앱 파일은 같은 버전 캐시에서만 응답 (일부 최신·일부 구버전 혼합 방지)
+  assert(/SHELL_URLS\.has/.test(sw) && /c\.match\(url\.href\)/.test(sw), '앱 파일 버전 고정 응답 없음');
+  ['css/style.css', 'index.html', 'privacy.html'].forEach((f) => assert(sw.includes(`'${f}'`), f));
+  assert(!/cdn\.jsdelivr|fonts\.googleapis/.test(html), '외부 글꼴 요청');
 });
 
 console.log(`\n${passed}개 통과, ${failed}개 실패`);

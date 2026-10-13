@@ -33,7 +33,13 @@
     카택: '카카오t', 카카오택시: '카카오t', 롯월: '롯데월드', 에버: '에버랜드', 지마켓: 'g마켓', 캐비: '캐리비안베이',
   };
   // PX 혜택은 이 단어가 검색어에 있을 때만 (일반 GS25·편의점 검색에 섞이지 않게)
-  const PX_TERMS = ['px', '군마트', '해군마트', '해군', '마트', '충성마트', '영외마트', '군매점', '군부대'];
+  const PX_TERMS = ['px', '군마트', '해군마트', '해군', '충성마트', '영외마트', '군매점', '군부대'];
+  // 결제 경로 선택지 (결과에 영향을 줄 때만 화면에 물어봄, null = 모름)
+  const ROUTES = {
+    px: { label: '어디 PX인가요?', opts: [['general', '일반 PX·군마트'], ['navy', 'GS25 해군마트']] },
+    channel: { label: '어떻게 결제하나요?', opts: [['offline', '매장에서 카드로'], ['app', '공식 앱·웹'], ['pay', '간편결제(페이)']] },
+    promo: { label: '행사상품인가요?', opts: [['all', '전부 행사상품'], ['none', '행사상품 아님']] },
+  };
 
   const pad = (n) => String(n).padStart(2, '0');
   const ymd = (t) => { const d = new Date(t); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
@@ -123,7 +129,7 @@
     const dayMatch = (d, t) => !!d && ((d.dates || []).includes(md(t)) || (d.dom || []).includes(new Date(t).getDate()));
     const inBand = (r, amt) => !(r.under && !(amt < r.under)) && !(r.over && !(amt >= r.over));
 
-    function usage(key, rule) {
+    function usage(key, rule, after) {
       const t = now();
       const today = ymd(t);
       const month = today.slice(0, 7);
@@ -132,6 +138,7 @@
       const u = { mSum: 0, mCnt: 0, dSum: 0, dCnt: 0, yCnt: 0, ySum: 0, qCnt: 0 };
       eachItem((it, tx) => {
         if (it.k !== key) return;
+        if (after != null && !(tx.ts > after)) return;
         if (rule && (!inBand(rule, tx.amt) || !dayOk(rule, tx.ts))) return;
         const d = ymd(tx.ts);
         if (d.startsWith(year)) {
@@ -144,10 +151,60 @@
       return u;
     }
 
-    function pooledUsed(cardId, month = thisMonth()) {
+    function pooledUsed(cardId, month = thisMonth(), after) {
       let sum = 0;
-      eachItem((it, tx) => { if (tx.card === cardId && it.pooled && ymd(tx.ts).startsWith(month)) sum += it.v; });
+      eachItem((it, tx) => { if (tx.card === cardId && it.pooled && ymd(tx.ts).startsWith(month) && (after == null || tx.ts > after)) sum += it.v; });
       return sum;
+    }
+
+    // ───── 남은 한도 직접 맞추기 ─────
+    // 설정 adjust: [{ id, card, key, ri, kind, left, at }] — '카드사 앱에서 at 시점에 본 남은 양 = left'
+    //  · 가짜 거래로 저장하지 않음. 그 기간의 사용량 = (한도 − left) + at 이후 기록 사용량 → at 이전 기록은 다시 빼지 않음
+    //  · 기간(일·월·분기·연)이 바뀌면 효력 없음. at 이후 기록을 취소하면 그만큼 자동 복원
+    //  · 통합한도는 key 'pooled', ri −1 (혜택별 한도와 따로 적용)
+    const ADJ_FIELD = { month: 'mSum', day: 'dSum', year: 'ySum', monthCount: 'mCnt', dayCount: 'dCnt', quarterCount: 'qCnt', yearCount: 'yCnt' };
+    function samePeriod(kind, a, b) {
+      const da = new Date(a); const db = new Date(b);
+      if (kind === 'day' || kind === 'dayCount') return ymd(a) === ymd(b);
+      if (kind === 'year' || kind === 'yearCount') return da.getFullYear() === db.getFullYear();
+      if (kind === 'quarterCount') return da.getFullYear() === db.getFullYear() && Math.floor(da.getMonth() / 3) === Math.floor(db.getMonth() / 3);
+      return ymd(a).slice(0, 7) === ymd(b).slice(0, 7); // month, monthCount, pooled
+    }
+    function adjFor(card, key, ri, kind) {
+      const t = now();
+      let hit = null;
+      (S().adjust || []).forEach((a) => {
+        if (a.card === card && a.key === key && a.ri === ri && a.kind === kind && a.at <= t && samePeriod(kind, a.at, t) && (!hit || a.at > hit.at)) hit = a;
+      });
+      return hit;
+    }
+    // 규칙별 사용량에 맞춘 값을 반영 (한도가 정의된 항목만)
+    function adjUsage(b, ri, r, u) {
+      const out = Object.assign({}, u);
+      const key = keyOf(b);
+      Object.keys(ADJ_FIELD).forEach((kind) => {
+        const L = resolve(r[kind]);
+        if (L == null || !isFinite(L)) return;
+        const a = adjFor(b.card, key, ri, kind);
+        if (!a) return;
+        const after = usage(key, r.under || r.over || r.days || r.notDays ? r : null, a.at);
+        const f = ADJ_FIELD[kind];
+        out[f] = L - Math.max(0, a.left - after[f]);
+        out.adj = out.adj || {};
+        out.adj[kind] = a;
+      });
+      return out;
+    }
+    // 통합한도: { lim, used, left, adj } — 맞춘 값이 있으면 lim을 몰라도 left를 앎
+    function pooledState(cardId, lim) {
+      const a = adjFor(cardId, 'pooled', -1, 'month');
+      if (a) {
+        const left = Math.max(0, a.left - pooledUsed(cardId, thisMonth(), a.at));
+        return { lim, left, used: lim != null ? Math.max(0, lim - left) : null, adj: a };
+      }
+      if (lim == null) return { lim, left: null, used: pooledUsed(cardId), adj: null };
+      const used = pooledUsed(cardId);
+      return { lim, left: Math.max(0, lim - used), used, adj: null };
     }
 
     // amt가 null이면 금액 구간과 무관한 한도만 확인
@@ -157,11 +214,11 @@
       let mRem = Infinity; // 금액 한도만 따로: 이번 달 / 오늘
       let dRem = Infinity;
       const t = now();
-      (b.lim || []).forEach((r) => {
+      (b.lim || []).forEach((r, ri) => {
         const banded = r.under || r.over;
         if (banded && (amt == null || !inBand(r, amt))) return;
         if (!dayOk(r, t)) return;
-        const u = usage(keyOf(b), banded || r.days || r.notDays ? r : null);
+        const u = adjUsage(b, ri, r, usage(keyOf(b), banded || r.days || r.notDays ? r : null));
         const m = resolve(r.month); const d = resolve(r.day);
         const mc = resolve(r.monthCount); const dc = resolve(r.dayCount); const yc = resolve(r.yearCount);
         const qc = resolve(r.quarterCount); const y = resolve(r.year);
@@ -177,9 +234,9 @@
         if (y != null && y - u.ySum < rem) { rem = Math.max(0, y - u.ySum); if (!rem) why = '올해 한도 소진'; }
       });
       if (b.req && b.req.pooled) {
-        const lim = pooledLimit(b);
-        if (lim != null && lim - pooledUsed(b.card) < rem) {
-          rem = Math.max(0, lim - pooledUsed(b.card));
+        const ps = pooledState(b.card, pooledLimit(b));
+        if (ps.left != null && ps.left < rem) {
+          rem = ps.left;
           if (!rem) why = '통합한도 소진';
         }
       }
@@ -190,12 +247,12 @@
     function limitBreakdown(b) {
       const t = now();
       const groups = [];
-      (b.lim || []).forEach((r) => {
+      (b.lim || []).forEach((r, ri) => {
         if (!dayOk(r, t)) return;
         const banded = r.under || r.over;
-        const u = usage(keyOf(b), banded || r.days || r.notDays ? r : null);
+        const u = adjUsage(b, ri, r, usage(keyOf(b), banded || r.days || r.notDays ? r : null));
         const items = [];
-        const add = (kind, lim, used) => { const L = resolve(lim); if (L != null && isFinite(L)) items.push({ kind, limit: L, used }); };
+        const add = (kind, lim, used) => { const L = resolve(lim); if (L != null && isFinite(L)) items.push({ kind, limit: L, used: Math.max(0, used), ri, adj: (u.adj || {})[kind] || null }); };
         add('month', r.month, u.mSum); add('day', r.day, u.dSum); add('year', r.year, u.ySum);
         add('monthCount', r.monthCount, u.mCnt); add('dayCount', r.dayCount, u.dCnt);
         add('quarterCount', r.quarterCount, u.qCnt); add('yearCount', r.yearCount, u.yCnt);
@@ -226,8 +283,53 @@
       return checks[key] ? true : null;
     }
 
+    // ───── 결제 경로 ─────
+    const route = () => (ctx.getRoute && ctx.getRoute()) || {};
+    // ok: 경로가 맞음 / unknown: 사용자가 아직 모름 / no: 경로가 달라 적용 안 됨
+    function routeCheck(b) {
+      const r = b.route;
+      if (!r) return { st: 'ok', keys: [] };
+      const cur = route();
+      const keys = [];
+      let why = '';
+      if (r.channel) {
+        if (cur.channel == null) keys.push('channel');
+        else if (!r.channel.includes(cur.channel)) why = r.channel.length === 1 && r.channel[0] === 'offline' ? '매장 카드 결제만 적용' : '이 결제 방법은 적용 안 돼요';
+      }
+      if (r.promo) {
+        if (cur.promo == null) keys.push('promo');
+        else if (cur.promo === 'none') why = why || '행사상품만 적용';
+      }
+      if (why) return { st: 'no', keys, why };
+      return { st: keys.length ? 'unknown' : 'ok', keys };
+    }
+    // 이 혜택 목록에서 결과가 달라지는 경로 질문만 (모든 검색에서 다 묻지 않음)
+    // 대체 혜택(fallbackIf)은 원래 혜택의 횟수·한도를 다 썼을 때만 물어봄
+    function routeKeys(list, amt) {
+      const keys = new Set();
+      list.forEach((b) => {
+        Object.keys(b.route || {}).forEach((k) => keys.add(k));
+        const eb = b.extra && BENEFIT[b.extra];
+        Object.keys((eb && eb.route) || {}).forEach((k) => keys.add(k));
+        if (b.fallback && remaining(b, amt || null).rem === 0) Object.keys(b.fallbackIf || {}).forEach((k) => keys.add(k));
+      });
+      return Object.keys(ROUTES).filter((k) => keys.has(k));
+    }
+    // 신한 GS25 해군마트: PX 횟수·한도를 다 쓴 결제는 Life 편의점으로 (한 결제의 1천원 초과분에 덧붙이지 않음)
+    function fallbackOf(b, amt) {
+      const fb = b.fallback && BENEFIT[b.fallback];
+      if (!fb || !amt) return null;
+      const cur = route();
+      if (!Object.entries(b.fallbackIf || {}).every(([k, v]) => cur[k] === v)) return null;
+      if (remaining(b, amt).rem !== 0) return null;
+      if (evaluate(fb, amt, true).status !== 'ok') return null;
+      const x = estimate(fb, amt);
+      return x && x.v > 0 ? { b: fb, x } : null;
+    }
+
     // status: ok(받을 수 있음) / check(조건 확인 필요) / no(못 받음) / none(미보유)
-    function evaluate(b, amt) {
+    // inStore: 대체 혜택 판정용 — 해군마트 매장 결제이므로 결제 경로 조건은 이미 충족
+    function evaluate(b, amt, inStore) {
       const s = S();
       const r = b.req || {};
       const why = [];
@@ -263,6 +365,8 @@
           else if (e.viaFirst) good.push('신규 발급 실적 인정');
         }
       }
+      const rc = inStore ? { st: 'ok', keys: [] } : routeCheck(b);
+      if (rc.st === 'no') { down('no'); why.push(rc.why); }
       if (b.excludeFrom) {
         const sp = effSpend(b).sp;
         if (sp != null && sp >= b.excludeFrom) { down('no'); why.push(`전월 ${man(b.excludeFrom)} 이상은 All in One으로 대체`); }
@@ -272,11 +376,17 @@
         const left = remaining(b, amt == null ? null : amt);
         if (left.rem === 0) {
           const ex = extraUsable(b, amt);
+          const fb = fallbackOf(b, amt);
           if (ex) good.push(`${left.why} · ${ex.b.title.replace(/.*\) ?/, '')}만 적용`);
-          else { status = 'no'; why.unshift(left.why); }
+          else if (fb) good.push(`${left.why} · ${CARD[fb.b.card].short} ${fb.b.title} 적용`);
+          else {
+            status = 'no';
+            why.unshift(left.why);
+            if (b.fallback && route().px == null) why.push('GS25 해군마트면 편의점 혜택 가능');
+          }
         }
       }
-      return { status, why, good, missing };
+      return { status, why, good, missing, route: rc.keys };
     }
 
     // extraAfter: 기본 혜택(현장할인)을 뺀 금액에 추가 혜택(캐시백)을 계산
@@ -286,11 +396,21 @@
       const amt2 = b.extraAfter ? amt - baseV : amt;
       if (amt2 <= 0 || evaluate(eb, amt2).status !== 'ok') return null;
       const ex = estimate(eb, amt2);
-      return ex && ex.v > 0 ? { b: eb, v: ex.v, amt: amt2 } : null;
+      if (!ex || !(ex.v > 0)) return null;
+      // 추가 혜택의 경로를 모르면 확정 합산하지 않고 '조건 충족 시'로 분리
+      return { b: eb, v: ex.v, amt: amt2, cond: routeCheck(eb).st === 'unknown' };
     }
 
     // ───── 예상 혜택 계산 ─────
     function estimate(b, amt) {
+      const x = estimateOwn(b, amt);
+      if (x && !(x.v > 0) && b.fallback) {
+        const fb = fallbackOf(b, amt);
+        if (fb) return Object.assign({}, fb.x, { fallback: fb.b, note: `${b.title.replace(/ \(.*/, '')} 횟수·한도 소진 → ${fb.b.title}` });
+      }
+      return x;
+    }
+    function estimateOwn(b, amt) {
       const c = b.calc;
       if (!c || !amt) return null;
       const t = now();
@@ -326,6 +446,7 @@
 
     // 결제 한 건의 기록 항목 (기본 + 중복 혜택)
     function txItems(b, x) {
+      if (x.fallback) b = x.fallback;
       const items = [];
       const base = x.v - (x.extra ? x.extra.v : 0);
       if (base > 0) items.push({ b: b.id, k: keyOf(b), v: base, pooled: !!(b.req && b.req.pooled), unit: x.unit });
@@ -347,26 +468,78 @@
     // 중복 적용 혜택(예: IBK PX 기본 + 특별할인) — 각자 한도로 따로 계산해서 합산
     function withExtra(b, amt, x) {
       const ex = extraUsable(b, amt, x.v);
-      if (ex) { x.extra = ex; x.v += ex.v; }
+      if (ex && ex.cond) x.condExtra = ex;
+      else if (ex) { x.extra = ex; x.v += ex.v; }
       return x;
     }
 
     // ───── 검색·정렬 ─────
-    function search(q) {
-      const tokens = q.trim().split(/\s+/).map(norm).filter(Boolean).map((t) => norm(ALIAS[t] || t));
-      if (!tokens.length) return [];
-      const pxQuery = tokens.some((t) => PX_TERMS.some((p) => t.includes(p)));
+    // 업종 검색(카페·편의점·PX…)은 그 업종 혜택 전체, 그 밖의 말은 특정 가맹점으로 보고 그 가맹점 혜택만
+    // visible: 보여줄 카드 — 카드를 먼저 거른 뒤 후보를 정해서 보유 카드 혜택이 잘려 나가지 않게
+    const CARD_WORDS = Object.fromEntries(DATA.CARDS.flatMap((c) => [[norm(c.short), c.id], [norm(c.short + '카드'), c.id]]).concat([['국민', 'kb'], ['기업', 'ibk'], ['기업은행', 'ibk']]));
+    function searchIntent(q) {
+      const words = q.trim().split(/\s+/).map(norm).filter(Boolean).map((t) => norm(ALIAS[t] || t));
+      const cards = words.filter((t) => CARD_WORDS[t]).map((t) => CARD_WORDS[t]);
+      const tokens = words.filter((t) => !CARD_WORDS[t]);
+      const whole = tokens.join('');
+      const sectorOf = (t) => DATA.SECTORS.find((s) => (s.terms || []).includes(t));
+      let sec = whole ? sectorOf(norm(ALIAS[whole] || whole)) : null;
+      if (!sec && tokens.length) {
+        const ss = tokens.map(sectorOf);
+        if (ss.every((x) => x && x === ss[0])) sec = ss[0];
+      }
+      return { tokens, cards, sector: sec ? sec.id : null };
+    }
+    function search(q, visible) {
+      const it = searchIntent(q);
+      if (!it.tokens.length && !it.cards.length) return [];
+      const pool = DATA.BENEFITS.filter((b) => (!visible || visible.includes(b.card)) && (!it.cards.length || it.cards.includes(b.card)));
+      if (it.sector) return pool.filter((b) => b.sector === it.sector);
+      if (!it.tokens.length) return pool.filter((b) => b.sector !== 'px');
+      const pxQuery = it.tokens.some((t) => PX_TERMS.some((p) => t.includes(p)));
       const strong = [];
       const weak = [];
-      DATA.BENEFITS.forEach((b) => {
+      pool.forEach((b) => {
         if (b.sector === 'px' && !pxQuery) return;
         const sec = SECTOR[b.sector];
-        const own = norm([b.title, b.where, b.kw, CARD[b.card].short, CARD[b.card].name, b.group].join(' '));
+        const own = norm([b.title, b.where, b.kw, b.group].join(' '));
         const all = own + norm(sec.name + sec.kw);
-        if (tokens.every((t) => own.includes(t))) strong.push(b);
-        else if (tokens.every((t) => all.includes(t))) weak.push(b);
+        if (it.tokens.every((t) => own.includes(t))) strong.push(b);
+        else if (it.tokens.every((t) => all.includes(t))) weak.push(b);
       });
       return strong.length ? strong : weak;
+    }
+
+    // 추천 이유 한두 줄과 차선 — 엔진 판정 결과로 만듦
+    function explain(rows, amt) {
+      const top = bestOf(rows, amt);
+      if (!top) return null;
+      const lines = [];
+      const x = top.x;
+      if (x && x.fallback) lines.push('PX 횟수·한도를 다 써서 Life 편의점 20%가 대신 적용돼요');
+      else if (x && x.partial) lines.push(`남은 한도까지만 적용돼요 (${won(x.v)})`);
+      else if (amt) {
+        const left = remaining(top.b, amt);
+        if (isFinite(left.dRem) && left.dRem <= left.mRem) lines.push(`이 카드의 오늘 남은 한도 ${won(left.dRem)} 안에서 적용돼요`);
+        else if (isFinite(left.mRem)) lines.push(`이 카드의 이번 달 남은 한도 ${won(left.mRem)} 안에서 적용돼요`);
+        else if (isFinite(left.rem)) lines.push(`남은 한도 ${won(left.rem)} 안에서 적용돼요`);
+        else lines.push('이 금액에서 할인이 가장 커요');
+      }
+      const others = rows.filter((r) => r.b.card !== top.b.card && !r.b.addon);
+      const spent = others.find((r) => r.e.status === 'no' && /소진|모두 사용/.test(r.e.why[0] || ''));
+      const check = others.find((r) => r.e.status === 'check' && !r.b.verify);
+      if (spent) lines.push(`${CARD[spent.b.card].short}는 ${spent.e.why[0]}라 제외했어요`);
+      else if (check) lines.push(`${CARD[check.b.card].short}는 조건 확인이 필요해 추천에서 뺐어요`);
+      if (x && x.condExtra) lines.push(`${ROUTE_HINT(top.b)} ${won(x.condExtra.v)} 추가 가능해요`);
+      else if (top.e.route && top.e.route.length) lines.push('결제 방법·대상 조건을 고르면 더 정확해져요');
+      const alt = rows.find((r) => r !== top && r.e.status === 'ok' && !r.b.addon && !r.b.verify && (!amt || (r.x && worth(r.x) > 0)) && r.b.card !== top.b.card)
+        || rows.find((r) => r !== top && r.e.status === 'ok' && !r.b.addon && !r.b.verify && (!amt || (r.x && worth(r.x) > 0)));
+      return { top, lines: lines.slice(0, 2), alt: alt || null };
+    }
+    function ROUTE_HINT(b) {
+      const eb = b.extra && BENEFIT[b.extra];
+      const ch = eb && eb.route && eb.route.channel;
+      return ch && ch.length === 1 && ch[0] === 'offline' ? '매장에서 카드로 결제하면' : '조건을 확인하면';
     }
 
     const ORDER = { ok: 0, check: 1, no: 2, none: 3 };
@@ -393,7 +566,7 @@
     // 할인율 구간(3만원 미만 30% 등)·건당 최대·남은 한도를 보고 나눌 금액 후보를 만든 뒤,
     // 앞 결제를 가상으로 기록해가며 최대 max번까지 나눠 계산. 결제를 한 번 더 나누려면 PLAN_GAIN원 이상 더 아껴야 함
     const PLAN_STEP = 100;
-    const PLAN_GAIN = 100;
+    const PLAN_GAIN = 500; // 기본: 한 번 더 나눌 때마다 500원 이상 더 아껴야 나눔
     const up = (n) => Math.ceil(n / PLAN_STEP) * PLAN_STEP;
     function planCands(b, R) {
       const c = b.calc;
@@ -421,7 +594,13 @@
       return [...set].sort((a, b2) => b2 - a);
     }
 
-    function plan(list, total, max = 3) {
+    // opts: { max: 최대 결제 횟수(1~3), gain: 결제를 1회 더 늘릴 때마다 필요한 추가 절약액 }
+    // 고르는 순서: (절약액 − gain × 추가 횟수)가 큰 것 → 같으면 절약액이 큰 것(추가 절약이 기준과 딱 같으면 나눔)
+    //             → 그래도 같으면 결제 횟수가 적은 것. 후보 금액만 살펴보는 탐색이라 '최대 N회 기준 추천 조합'
+    function plan(list, total, opts) {
+      const o = typeof opts === 'number' ? { max: opts } : (opts || {});
+      const max = Math.max(1, Math.min(3, o.max || 3));
+      const GAIN = o.gain == null ? PLAN_GAIN : o.gain;
       const pool = list.filter((b) => b.calc && !b.calc.ticket && !b.addon && !b.verify);
       const pay = (b, amt) => {
         if (evaluate(b, amt).status !== 'ok') return null;
@@ -438,18 +617,19 @@
       let best = null;
       const consider = (pays) => {
         const w = pays.reduce((s, p) => s + p.w, 0);
-        const score = w - PLAN_GAIN * (pays.length - 1);
-        if (!best || score > best.score) best = { pays, w, score };
+        const score = w - GAIN * (pays.length - 1);
+        if (!best || score > best.score || (score === best.score && (w > best.w || (w === best.w && pays.length < best.pays.length)))) best = { pays, w, score };
       };
       const hold = (p) => virtual.push({ id: 'plan', ts: t, card: p.b.card, amt: p.amt, items: txItems(p.b, p.x) });
       const prev = virtual;
       virtual = [];
       let single;
+      let depthMax = max;
       try {
         single = bestFor(total);
         // 후보가 너무 많으면(넓은 검색어) 계산량을 줄이려고 2번까지만 나눔
         const size = pool.reduce((s, b) => s + planCands(b, total).length, 0);
-        const depthMax = size > 60 ? Math.min(max, 2) : max;
+        if (size > 60) depthMax = Math.min(max, 2);
         const dfs = (R, pays, start) => {
           consider(pays.concat(bestFor(R)));
           if (pays.length + 1 >= depthMax) return;
@@ -469,21 +649,22 @@
       } finally {
         virtual = prev;
       }
-      return { total, pays: best.pays, saved: best.w, single, gain: best.w - single.w };
+      return { total, pays: best.pays, saved: best.w, single, gain: best.w - single.w, max, rule: GAIN, limited: depthMax < max };
     }
 
     return {
       CARD, SECTOR, BANK, BENEFIT, NEEDS, TICKET_PRICE,
       ymd, thisMonth, addMonth, won, man, norm,
       spendOf, spendStale, firstActive, cardLimit, pooledUsed, usage, remaining,
-      needStatus, evaluate, estimate, search, rank, bestOf, keyOf, effective, limitBreakdown,
-      txItems, unitOf, plan, worth,
+      needStatus, evaluate, estimate, search, searchIntent, rank, bestOf, explain, keyOf, effective, limitBreakdown, routeKeys, routeCheck, ROUTES,
+      txItems, unitOf, plan, worth, PLAN_GAIN, pooledState, adjFor, samePeriod, pooledLimitOf: (id) => cardLimit(id),
     };
   }
 
   // ───── 저장 데이터 검증 (불러오기·백업 복원 공용) ─────
   const isObj = (v) => v && typeof v === 'object' && !Array.isArray(v);
   const MONTH = /^\d{4}-\d{2}$/;
+  const ADJ_KINDS = ['month', 'day', 'year', 'monthCount', 'dayCount', 'quarterCount', 'yearCount'];
   function sanitizeSettings(DATA, raw) {
     const cards = new Set(DATA.CARDS.map((c) => c.id));
     const banks = new Set(DATA.BANKS.map((b) => b.id));
@@ -501,9 +682,23 @@
       soldier: typeof r.soldier === 'boolean' ? r.soldier : null,
       checks: Object.fromEntries(Object.entries(isObj(r.checks) ? r.checks : {}).filter(([, v]) => v === true)),
       pointValue: r.pointValue === 0 ? 0 : 1,
+      splitGain: [100, 500, 1000].includes(r.splitGain) ? r.splitGain : 500,
+      favs: favList(r.favs),
+      adjust: (Array.isArray(r.adjust) ? r.adjust : []).filter((a) => isObj(a) && typeof a.id === 'string' && cards.has(a.card) && typeof a.key === 'string'
+        && Number.isInteger(a.ri) && a.ri >= -1 && ADJ_KINDS.includes(a.kind) && Number.isFinite(a.left) && a.left >= 0 && Number.isFinite(a.at) && a.at > 0).slice(-200)
+        .map((a) => ({ id: a.id, card: a.card, key: a.key, ri: a.ri, kind: a.kind, left: a.left, at: a.at })),
       showAll: r.showAll === true,
       onboarded: r.onboarded === true,
     };
+  }
+  // 즐겨찾기: [{ q, route }] — route는 저장할 때 고른 결제 경로 (null = 모름)
+  const ROUTE_VALS = { px: ['general', 'navy'], channel: ['offline', 'app', 'pay'], promo: ['all', 'none'] };
+  function favList(raw) {
+    const seen = new Set();
+    return (Array.isArray(raw) ? raw : []).filter((f) => isObj(f) && typeof f.q === 'string' && f.q.trim() && f.q.length <= 30)
+      .filter((f) => { const k = f.q.trim().toLowerCase(); if (seen.has(k)) return false; seen.add(k); return true; })
+      .slice(0, 20)
+      .map((f) => ({ q: f.q.trim(), route: Object.fromEntries(Object.entries(isObj(f.route) ? f.route : {}).filter(([k, v]) => (ROUTE_VALS[k] || []).includes(v))) }));
   }
   function isTx(DATA, t) {
     const cards = new Set(DATA.CARDS.map((c) => c.id));
@@ -512,5 +707,27 @@
       && t.items.every((i) => isObj(i) && typeof i.b === 'string' && typeof i.k === 'string' && Number.isFinite(i.v) && i.v >= 0);
   }
 
-  return { create, NEEDS, sanitizeSettings, isTx };
+  // 백업 가져오기용 엄격 검증: 혜택이 있고 카드가 맞는지, 한도 키·단위·boolean, 중복 id
+  // 과거 금액(v)은 그 당시 계산이라 현재 약관으로 다시 계산해 덮어쓰지 않음
+  function cleanImportTx(DATA, list, fixId) {
+    const BEN = Object.fromEntries(DATA.BENEFITS.map((b) => [b.id, b]));
+    const seen = new Set();
+    const out = [];
+    let dropped = 0;
+    (Array.isArray(list) ? list : []).forEach((t) => {
+      const fixed = isObj(t) && Array.isArray(t.items) ? Object.assign({}, t, { items: t.items.map((i) => (isObj(i) ? Object.assign({}, i, { b: fixId(i.b), k: fixId(i.k) }) : i)) }) : t;
+      const ok = isTx(DATA, fixed) && !seen.has(fixed.id) && fixed.ts <= Date.now() + 864e5
+        && fixed.items.every((i) => BEN[i.b] && BEN[i.b].card === fixed.card && ['won', 'point', 'use'].includes(i.unit || 'won') && (i.pooled == null || typeof i.pooled === 'boolean'));
+      if (!ok) { dropped++; return; }
+      seen.add(fixed.id);
+      const tx = { id: fixed.id, ts: fixed.ts, card: fixed.card, amt: fixed.amt,
+        items: fixed.items.map((i) => ({ b: i.b, k: BEN[i.b].limKey || BEN[i.b].id, v: i.v, pooled: !!i.pooled, unit: i.unit || 'won' })) };
+      if (fixed.edited === true) tx.edited = true;
+      if (typeof fixed.plan === 'string') tx.plan = fixed.plan;
+      out.push(tx);
+    });
+    return { tx: out, dropped };
+  }
+
+  return { create, NEEDS, sanitizeSettings, isTx, cleanImportTx };
 }));
