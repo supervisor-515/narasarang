@@ -33,7 +33,7 @@
   let LEDGER = [];
   const input = { tickets: 1 };
   const E = window.Engine.create(DATA, { getS: () => S, getLedger: () => LEDGER, getInput: () => input });
-  const { CARD, SECTOR, BANK, BENEFIT, NEEDS, won, man, ymd, thisMonth } = E;
+  const { CARD, SECTOR, BANK, BENEFIT, NEEDS, won, man, ymd, thisMonth, unitOf } = E;
 
   // 예전 설정: 사용액 입력 월이 없으면 이번 달로 간주
   Object.keys(S.spend).forEach((id) => { if (!S.spendAt[id]) S.spendAt[id] = thisMonth(); });
@@ -48,7 +48,6 @@
   // { id, ts, card, amt, items: [{ b, k, v, pooled, unit }] } — 한 번의 결제에 기본·추가 혜택을 묶음
   const isTx = (t) => window.Engine.isTx(DATA, t);
   const fixId = (x) => LEGACY_IDS[x] || x;
-  const unitOf = (b) => (b && (b.type === '적립' || (b.calc && b.calc.steps)) ? 'point' : 'won');
 
   function loadLedger() {
     const cut = Date.now() - 400 * 864e5; // 연 횟수 계산용으로 13개월치 보관
@@ -75,6 +74,7 @@
   const ui = {
     tab: S.onboarded ? 'home' : 'settings', q: '', amount: 0, sector: 'px', card: null,
     open: new Set(), txOpen: new Set(), month: thisMonth(),
+    pq: 'PX', planMax: 3,
   };
 
   // ───────── 유틸 ─────────
@@ -211,10 +211,10 @@
   }
 
   // 토스 송금처럼 큰 숫자 + 빠른 금액 버튼
-  function amountCard(where) {
+  function amountCard(where, ask = '얼마 결제하나요?') {
     return `
       <div class="amt-card">
-        <label for="amt" class="amt-label">${esc(where)} 얼마 결제하나요?</label>
+        <label for="amt" class="amt-label">${esc(where)} ${esc(ask)}</label>
         <div class="amt-field">
           <input id="amt" inputmode="numeric" pattern="[0-9]*" enterkeyhint="done" autocomplete="off" placeholder="금액 입력" value="${ui.amount ? ui.amount.toLocaleString('ko-KR') : ''}">
           <span class="amt-won ${ui.amount ? '' : 'off'}">원</span>
@@ -318,6 +318,85 @@
   function sectorResults(rows) {
     const s = SECTOR[ui.sector];
     return best(rows, `${s.name}`) + (list(rows, `혜택 ${rows.length}개 <small>좋은 순</small>`) || '<div class="empty"><div class="big">📭</div><p>이 섹터에 해당하는 혜택이 없어요</p></div>');
+  }
+
+  // ───────── 화면: 결제 계획 ─────────
+  // 가기 전에 쓸 금액을 넣으면, 카드 하나로 낼 때와 여러 번(카드)으로 나눠 낼 때를 비교
+  const PLAN_QUICK = ['PX', '편의점', '스타벅스', '배달의민족', '택시', 'KTX', '쿠팡'];
+  function viewPlan() {
+    let html = `<h1 class="page-title">결제 계획</h1>
+      <p class="hint plan-intro">가기 전에 쓸 금액을 넣으면, 카드 하나로 낼 때와 나눠서 낼 때 중 어느 쪽이 더 아끼는지 알려드려요.</p>
+      <div class="search-wrap">
+        <label class="search ${ui.pq ? 'has-value' : ''}">
+          <span aria-hidden="true">📍</span>
+          <input id="pq" type="search" enterkeyhint="next" autocomplete="off" aria-label="결제할 곳" placeholder="어디서 쓸 건가요? (PX, GS25, 스타벅스…)" value="${esc(ui.pq)}">
+          <button class="clear" id="pclear" type="button" aria-label="결제할 곳 지우기">✕</button>
+        </label>
+        <div class="chips" style="margin-top:8px">${PLAN_QUICK.map((k) => `<button class="chip ${k === ui.pq ? 'on' : ''}" ${pressed(k === ui.pq)} data-pq="${esc(k)}">${esc(k)}</button>`).join('')}</div>
+      </div>`;
+    html += amountCard(ui.pq.trim() ? `‘${ui.pq.trim()}’에서` : '', '얼마 쓸 예정인가요?');
+    html += `<div class="seg" role="group" aria-label="최대 나눠 내기">${[[1, '한 번에'], [2, '2번까지'], [3, '3번까지']].map(([n, l]) => `<button class="${ui.planMax === n ? 'on' : ''}" ${pressed(ui.planMax === n)} data-pmax="${n}">${l}</button>`).join('')}</div>`;
+    html += `<div id="results">${planResults()}</div>`;
+    return html;
+  }
+
+  function planResults() {
+    const q = ui.pq.trim();
+    if (!q) return '<div class="empty"><div class="big">📍</div><p>결제할 곳을 먼저 골라주세요</p></div>';
+    const found = E.search(q).filter((b) => visibleCards().includes(b.card));
+    if (!found.length) return `<div class="empty"><div class="big">🤔</div><p>‘${esc(q)}’ 관련 혜택을 찾지 못했어요</p></div>`;
+    if (!ui.amount) return '<div class="empty"><div class="big">🧮</div><p>쓸 금액을 넣으면 결제 계획을 짜드려요</p></div>';
+    const p = E.plan(found, ui.amount, ui.planMax);
+    const pays = p.pays.filter((x) => x.b);
+    const left = found.filter((b) => b.calc && !b.addon && E.evaluate(b, null).status === 'check').length;
+    const wheres = new Set(pays.map((x) => x.b.where));
+    let html = `<div class="section plan">
+      <div class="plan-sum">
+        <div><span class="muted">${p.pays.length > 1 ? `${p.pays.length}번 나눠 내면` : '이렇게 내면'}</span><b>${won(p.saved)} 아껴요</b></div>
+        ${p.gain > 0 ? `<span class="pill ok">카드 하나보다 ${won(p.gain)} 더</span>` : ''}
+      </div>
+      <ol class="plan-steps">${p.pays.map((x, i) => planStep(x, i)).join('')}</ol>
+      ${p.gain > 0 && p.single.b ? `<p class="hint">카드 하나로 낼 때 최선: ${esc(CARD[p.single.b.card].short)} ${esc(p.single.b.title)} · ${won(p.single.w)}</p>` : ''}
+      ${p.pays.length > 1 ? '<p class="hint">결제마다 따로 계산해요 (한 번에 나눠 결제하거나 따로 사도 돼요). 순서대로 내면 한도가 위처럼 차감돼요.</p>' : ''}
+      ${wheres.size > 1 ? '<p class="hint warn-text">⚠️ 대상 가맹점이 다른 혜택이 섞여 있어요. 가는 곳 이름(예: GS25, CU)으로 검색하면 더 정확해요.</p>' : ''}
+      ${!pays.length ? `<p class="hint">지금 조건으로 받을 수 있는 혜택이 없어요</p>` : ''}
+      ${left ? `<p class="hint">조건 확인이 필요한 혜택 ${left}개는 계산에서 뺐어요 · <button class="link" data-go="settings">설정에서 입력</button></p>` : ''}
+      ${pays.length ? '<button class="confirm" id="planDone">이대로 결제했어요 · 모두 기록</button>' : ''}
+    </div>`;
+    html += '<p class="hint" style="margin:0 4px 12px">지금까지 기록한 결제의 남은 한도·횟수를 반영한 예상이에요. 할인율이 바뀌는 금액(예: 3만원) 바로 아래로 맞추면 유리해요.</p>';
+    return html;
+  }
+
+  function planStep(x, i) {
+    if (!x.b) return `<li class="plan-step"><span class="no">${i + 1}</span><div class="body"><div class="title">${won(x.amt)} · 아무 카드</div><div class="where">혜택 없는 나머지 금액</div></div><div class="val"><b class="zero">0원</b></div></li>`;
+    const c = CARD[x.b.card];
+    const ctx = x.b.ctx || [];
+    return `<li class="plan-step"><span class="no">${i + 1}</span>${logo(c)}
+      <div class="body">
+        <div class="title">${esc(c.short)}로 ${won(x.amt)}</div>
+        <div class="where">${esc(x.b.title)}${x.x.extra ? ` + ${esc(x.x.extra.b.title)}` : ''}</div>
+        ${ctx.length ? `<div class="where warn-text">결제 전 확인 · ${ctx.map(esc).join(' · ')}</div>` : ''}
+        ${x.x.partial ? '<div class="where warn-text">남은 한도까지만 적용</div>' : ''}
+      </div>
+      <div class="val"><b class="est">${x.x.unit === 'point' ? fmtV(x.x.v, 'point') : '−' + won(x.x.v)}</b></div></li>`;
+  }
+
+  // 계획대로 결제했으면 결제마다 기록 (순서대로 한도 차감)
+  function confirmPlan() {
+    const p = E.plan(E.search(ui.pq.trim()).filter((b) => visibleCards().includes(b.card)), ui.amount, ui.planMax);
+    const pays = p ? p.pays.filter((x) => x.b) : [];
+    if (!pays.length) return;
+    const ts = Date.now();
+    const added = pays.map((x, i) => ({ id: 't' + (ts + i) + '-' + Math.random().toString(36).slice(2, 7), ts: ts + i, card: x.b.card, amt: x.amt, items: E.txItems(x.b, x.x) }));
+    LEDGER.push(...added);
+    if (!saveLedger()) {
+      LEDGER.splice(LEDGER.length - added.length, added.length);
+      toast('⚠️ 기록을 저장하지 못했어요. 저장공간·개인정보 보호 모드를 확인한 뒤 다시 시도해주세요');
+      return;
+    }
+    ui.amount = 0;
+    render(true);
+    toast(`결제 ${added.length}건 · ${won(p.saved)} 예상 혜택을 기록했어요`);
   }
 
   // ───────── 화면: 내 카드 ─────────
@@ -546,7 +625,7 @@
   }
 
   // ───────── 렌더 & 이벤트 ─────────
-  const VIEWS = { home: viewHome, sector: viewSector, cards: viewCards, settings: viewSettings };
+  const VIEWS = { home: viewHome, plan: viewPlan, sector: viewSector, cards: viewCards, settings: viewSettings };
 
   function render(keepScroll) {
     const y = window.scrollY;
@@ -579,6 +658,13 @@
       res.innerHTML = resultsHTML(rows);
       $('.search').classList.toggle('has-value', !!ui.q);
       showTickets(rows.map((r) => r.b));
+    } else if (ui.tab === 'plan' && res) {
+      res.innerHTML = planResults();
+      const pq = $('#pq');
+      if (pq) pq.closest('.search').classList.toggle('has-value', !!ui.pq);
+      document.querySelectorAll('[data-pq]').forEach((b) => { const on = b.dataset.pq === ui.pq; b.classList.toggle('on', on); b.setAttribute('aria-pressed', on); });
+      const lbl = $('.amt-label');
+      if (lbl) lbl.textContent = `${ui.pq.trim() ? `‘${ui.pq.trim()}’에서 ` : ''}얼마 쓸 예정인가요?`;
     } else if (ui.tab === 'sector' && res) {
       res.innerHTML = sectorResults(ranked(BENEFITS.filter((b) => b.sector === ui.sector)));
     }
@@ -625,11 +711,7 @@
     if (!x || !(x.v > 0)) return;
     const c = CARD[b.card];
     const ts = Date.now();
-    const items = [];
-    const base = x.v - (x.extra ? x.extra.v : 0);
-    if (base > 0) items.push({ b: b.id, k: E.keyOf(b), v: base, pooled: !!(b.req && b.req.pooled), unit: x.unit });
-    if (x.extra) items.push({ b: x.extra.b.id, k: E.keyOf(x.extra.b), v: x.extra.v, pooled: !!(x.extra.b.req && x.extra.b.req.pooled), unit: unitOf(x.extra.b) });
-    const tx = { id: 't' + ts + '-' + Math.random().toString(36).slice(2, 7), ts, card: b.card, amt: ui.amount, items };
+    const tx = { id: 't' + ts + '-' + Math.random().toString(36).slice(2, 7), ts, card: b.card, amt: ui.amount, items: E.txItems(b, x) };
     LEDGER.push(tx);
     if (!saveLedger()) {
       LEDGER.pop();
@@ -721,6 +803,10 @@
       return;
     }
     if (d.cancel) { cancelTx(d.cancel); return; }
+    if (d.pq) { ui.pq = d.pq; const el = $('#pq'); if (el) el.value = d.pq; refreshResults(); if (!ui.amount && $('#amt')) $('#amt').focus(); return; }
+    if (d.pmax) { ui.planMax = Number(d.pmax); render(true); return; }
+    if (t.id === 'planDone') { confirmPlan(); return; }
+    if (t.id === 'pclear') { ui.pq = ''; render(true); focusEnd('#pq'); return; }
     if (d.flag) { S.checks[d.flag] = true; saveS(); render(true); return; }
     if (d.soldier) { S.soldier = d.soldier === '1'; saveS(); render(true); return; }
     if (d.lm) { ui.month = E.addMonth(ui.month, Number(d.lm)); render(true); return; }
@@ -768,6 +854,7 @@
   document.addEventListener('input', (ev) => {
     const el = ev.target;
     if (el.id === 'q') { ui.q = el.value; refreshResults(); }
+    if (el.id === 'pq') { ui.pq = el.value; refreshResults(); }
     if (el.id === 'amt') setAmount(parseInt(el.value.replace(/[^0-9]/g, ''), 10) || 0);
   });
 
@@ -807,6 +894,7 @@
 
   document.addEventListener('keydown', (ev) => {
     if (ev.target.id === 'q' && ev.key === 'Enter') { const a = $('#amt'); if (a && !$('.amt-slot').hidden) a.focus(); else ev.target.blur(); }
+    if (ev.target.id === 'pq' && ev.key === 'Enter') { const a = $('#amt'); if (a) a.focus(); }
     if (ev.target.id === 'amt' && ev.key === 'Enter') ev.target.blur();
     const ds = ev.target.dataset || {};
     if ((ev.key === 'Enter' || ev.key === ' ') && (ds.id || ds.tx) && ev.target.getAttribute('role') === 'button') { ev.preventDefault(); ev.target.click(); }

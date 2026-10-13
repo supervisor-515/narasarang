@@ -327,6 +327,57 @@ test('기록 검증: 음수·빈 항목·모르는 카드는 거부', () => {
   assert(!Engine.isTx(DATA, Object.assign({}, ok, { items: [{ b: 'ibk-npay', k: 'ibk-npay', v: -5 }] })));
 });
 
+console.log('결제 계획');
+
+const PX_ALL = { soldier: true, savings: ['ibk'], spend: { hana: 300000, ibk: 300000, shinhan: 300000, kb: 300000 } };
+const ids = (p) => p.pays.map((x) => (x.b ? x.b.id : '-') + ':' + x.amt).join(' ');
+
+test('PX 5만원: 하나 한 번(1만원)보다 3만원 미만 + 나머지로 나누면 11,660원', () => {
+  const { E } = setup({ s: PX_ALL });
+  const p = E.plan(E.search('PX'), 50000);
+  assert.strictEqual(p.single.w, 10000);
+  assert.strictEqual(p.saved, 11660, ids(p));
+  assert(p.pays.some((x) => x.b && x.b.id === 'hana-px' && x.amt < 30000), ids(p));
+  assert.strictEqual(p.pays.reduce((s, x) => s + x.amt, 0), 50000);
+});
+
+test('PX 20만원: IBK 한 번(기본 5만 + 특별 5만)이 최선이라 나누지 않음', () => {
+  const { E } = setup({ s: PX_ALL });
+  const p = E.plan(E.search('PX'), 200000);
+  assert.strictEqual(p.pays.length, 1, ids(p));
+  assert.strictEqual(p.pays[0].b.id, 'ibk-px-basic');
+  assert.strictEqual(p.saved, 100000);
+});
+
+test('PX 25만원: IBK 20만원(특별할인 조건)에 맞추고 나머지를 하나로', () => {
+  const { E } = setup({ s: PX_ALL });
+  const p = E.plan(E.search('PX'), 250000);
+  assert(p.pays.some((x) => x.b && x.b.id === 'ibk-px-basic' && x.amt === 200000), ids(p));
+  assert.strictEqual(p.saved, 111660, ids(p));
+});
+
+test('결제 계획: 한 번에(max 1)는 카드 하나 추천과 같다', () => {
+  const { E } = setup({ s: PX_ALL });
+  const p = E.plan(E.search('PX'), 50000, 1);
+  assert.strictEqual(p.pays.length, 1);
+  assert.strictEqual(p.saved, 10000);
+  assert.strictEqual(p.gain, 0);
+});
+
+test('결제 계획: 이미 쓴 한도를 반영 (하나 3만원 미만 일 5천 소진 후)', () => {
+  const ledger = [tx('2026-10-15T09:00:00', 'hana', 16700, [{ b: 'hana-px', k: 'hana-px', v: 5000 }])];
+  const { E } = setup({ s: PX_ALL, ledger });
+  const p = E.plan(E.search('PX'), 50000);
+  assert(!p.pays.some((x) => x.b && x.b.id === 'hana-px' && x.amt < 30000), ids(p));
+  assert.strictEqual(ledger.length, 1, '가상 결제가 실제 기록에 남으면 안 됨');
+});
+
+test('결제 계획: 조건 확인이 필요한 혜택은 쓰지 않음', () => {
+  const { E } = setup({ s: { spend: { hana: 300000 } } });
+  const p = E.plan(E.search('PX'), 200000);
+  assert(!p.pays.some((x) => x.b && x.b.id.startsWith('ibk-px')), ids(p));
+});
+
 console.log('배포 파일 검증');
 
 function pngSize(file) {
