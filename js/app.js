@@ -76,7 +76,7 @@
 
   const ui = {
     tab: S.onboarded ? 'home' : 'settings', q: '', amount: 0, sector: 'px', card: null,
-    open: new Set(), txOpen: new Set(), month: thisMonth(),
+    open: new Set(), txOpen: new Set(), month: thisMonth(), rmonth: thisMonth(),
     split: 'one', // PX: 한 번에 / 간단하게(최대 2회) / 최대 절약(최대 3회)
     coOpen: false, lastPlan: null,
   };
@@ -316,16 +316,47 @@
     return star + routeBar(rows.map((r) => r.b)) + best(rows, `‘${ui.q.trim()}’`) + list(rows, `검색 결과 ${rows.length}개 <small>받을 수 있는 혜택 ${okN}개</small>`);
   }
 
+  // 월간 리포트: 아낀 돈 · 평균 절약률 · 카드 한 장만 썼을 때와 비교 · 최근 6개월
   function monthSummary() {
-    const txs = monthTx(thisMonth());
-    if (!txs.length) return '';
-    const sum = txSums(txs);
-    const byCard = CARDS.map((c) => [c, txSums(txs.filter((t) => t.card === c.id))]).filter(([, v]) => v.won || v.point);
-    return `<div class="section"><h2>이번 달 기록한 예상 혜택 <small>결제 ${txs.length}건</small></h2>
-      <div class="saved">${won(sum.won)}${sum.point ? ` <span class="pt">+ ${fmtV(sum.point, 'point')}</span>` : ''}</div>
-      <p class="hint" style="margin-top:4px">직접 기록한 결제로 계산한 금액이에요. 실제 카드사 지급액과 다를 수 있어요.</p>
-      <div class="opts" style="margin-top:10px">${byCard.map(([c, v]) => `<button class="opt" data-card="${c.id}" data-goto="cards">${esc(c.short)} ${won(v.won)}${v.point ? ' · ' + fmtV(v.point, 'point') : ''}</button>`).join('')}</div>
-    </div>`;
+    if (!LEDGER.some((t) => t.amt > 0)) return '';
+    const m = ui.rmonth;
+    const txs = monthTx(m);
+    const cards = S.cards.length ? S.cards : [...new Set(LEDGER.map((t) => t.card))];
+    const r = window.Engine.monthReport(DATA, S, txs, cards);
+    const fmtW = (v) => won(v);
+    const months = Array.from({ length: 6 }, (_, i) => E.addMonth(thisMonth(), i - 5));
+    const hist = months.map((mm) => ({ m: mm, w: window.Engine.monthReport(DATA, S, monthTx(mm), []).worth }));
+    const top = Math.max(1, ...hist.map((h) => h.w));
+    let html = `<div class="section report"><h2>월간 리포트
+      <span class="mnav"><button data-rm="-1" aria-label="이전 달">‹</button><span>${m.replace('-', '.')}</span><button data-rm="1" aria-label="다음 달" ${m >= thisMonth() ? 'disabled' : ''}>›</button></span></h2>`;
+    if (!r.count) {
+      html += `<p class="hint">이 달에는 기록한 결제가 없어요.</p>`;
+    } else {
+      html += `
+        <div class="rp-kpis">
+          <div class="rp-kpi"><span>아낀 돈</span><b class="rp-big">${fmtW(r.won)}</b>${r.point ? `<small>+ ${fmtV(r.point, 'point')}</small>` : ''}</div>
+          <div class="rp-kpi"><span>평균 절약률</span><b class="rp-big">${r.pct.toFixed(1)}<em>%</em></b><small>결제 ${won(r.spent)} · ${r.count}건</small></div>
+        </div>`;
+      if (r.single.length) {
+        const max = Math.max(1, r.worth, ...r.single.map((x) => x.worth));
+        html += `<div class="rp-sub">카드 한 장만 썼다면</div>
+          <div class="rp-row me"><span class="rp-name">내 결제</span><div class="rp-bar"><div style="width:${(r.worth / max) * 100}%"></div></div><b>${fmtW(r.worth)}</b></div>
+          ${r.single.map((x) => {
+            const c = CARD[x.card];
+            const d = x.diff;
+            return `<div class="rp-row"><span class="rp-name">${logo(c)}${esc(c.short)}만</span><div class="rp-bar"><div style="width:${(x.worth / max) * 100}%;background:${c.color}"></div></div>
+              <b>${fmtW(x.worth)}<small class="${d > 0 ? 'up' : d < 0 ? 'down' : ''}">${d > 0 ? `+${won(d)} 더 아낌` : d < 0 ? `${won(-d)} 덜 아낌` : '같음'}</small></b></div>`;
+          }).join('')}`;
+        const bestSingle = r.single[0];
+        if (bestSingle && r.worth > bestSingle.worth) html += `<p class="rp-msg">카드를 골라 써서 가장 나은 한 장(${esc(CARD[bestSingle.card].short)})보다 <b>${won(r.worth - bestSingle.worth)}</b> 더 아꼈어요</p>`;
+        else if (bestSingle && r.worth < bestSingle.worth) html += `<p class="rp-msg warn">${esc(josa(CARD[bestSingle.card].short, '으로/로'))}만 결제했다면 <b>${won(bestSingle.worth - r.worth)}</b> 더 아낄 수 있었어요. 결제 전에 추천 카드를 확인해보세요</p>`;
+      }
+    }
+    html += `<div class="rp-sub">최근 6개월</div><div class="rp-hist">${hist.map((h) => `<button class="rp-col ${h.m === m ? 'on' : ''}" data-rmset="${h.m}" aria-label="${h.m} ${won(h.w)}">
+      <span class="rp-v">${h.w ? (h.w >= 10000 ? (h.w / 10000).toFixed(1).replace(/\.0$/, '') + '만' : h.w.toLocaleString('ko-KR')) : ''}</span>
+      <span class="rp-c"><i style="height:${Math.max(h.w ? 6 : 2, (h.w / top) * 64)}px"></i></span><span class="rp-m">${Number(h.m.slice(5))}월</span></button>`).join('')}</div>
+      <p class="hint">직접 기록한 결제로 계산한 예상 금액이에요. ‘한 장만 썼다면’은 같은 곳·금액을 그 카드로 결제했다고 가정하고 한도까지 반영한 추정이며, 전월 실적은 지금 설정값을 기준으로 해요.</p></div>`;
+    return html;
   }
 
   // ───────── 화면: 섹터 ─────────
@@ -427,7 +458,7 @@
     const lp = ui.lastPlan;
     if (!lp || lp.amount !== ui.amount) { render(true); return; }
     const id = 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-    CO = { id, createdAt: Date.now(), day: ymd(Date.now()), total: lp.amount, mode: lp.mode, max: lp.p.max, gain: lp.gain, route: { px: route.px }, seq: lp.p.pays.length, steps: lp.p.pays.map((x, i) => stepOf(x, i, id)) };
+    CO = { id, where: placeNow(), createdAt: Date.now(), day: ymd(Date.now()), total: lp.amount, mode: lp.mode, max: lp.p.max, gain: lp.gain, route: { px: route.px }, seq: lp.p.pays.length, steps: lp.p.pays.map((x, i) => stepOf(x, i, id)) };
     if (!saveCO()) { CO = null; toast('⚠️ 계획을 저장하지 못했어요. 저장공간·개인정보 보호 모드를 확인해주세요'); return; }
     ui.coOpen = true;
     render();
@@ -507,7 +538,7 @@
     }
     const now = stepNow(st);
     if (!now.ok || CO.day !== ymd(Date.now())) { render(true); return; }
-    const tx = { id: st.txId, ts: Date.now(), card: st.card, amt: st.amt, items: st.items, plan: CO.id };
+    const tx = Object.assign({ id: st.txId, ts: Date.now(), card: st.card, amt: st.amt, items: st.items, plan: CO.id }, CO.where || {});
     LEDGER.push(tx);
     if (!saveLedger()) {
       LEDGER.pop();
@@ -956,6 +987,16 @@
 
   function go(tab) { ui.tab = tab; render(); }
 
+  // 어디서 결제했는지 — 월간 리포트에서 '다른 카드로 냈다면'을 같은 곳 기준으로 다시 계산할 때 씀
+  function placeNow() {
+    const w = {};
+    if (ui.tab === 'home') w.place = (ui.q.trim() || 'PX').slice(0, 30);
+    else if (ui.tab === 'sector') w.sec = ui.sector;
+    const r = Object.fromEntries(Object.entries(route).filter(([, v]) => v != null));
+    if (Object.keys(r).length) w.route = r;
+    return w;
+  }
+
   // 결제 한 건 = 거래 하나 (기본 + 중복 혜택을 묶어서 저장)
   function confirmPay(id) {
     const b = BENEFIT[id];
@@ -963,7 +1004,7 @@
     if (!x || !(x.v > 0)) return;
     const c = CARD[b.card];
     const ts = Date.now();
-    const tx = { id: 't' + ts + '-' + Math.random().toString(36).slice(2, 7), ts, card: b.card, amt: ui.amount, items: E.txItems(b, x) };
+    const tx = Object.assign({ id: 't' + ts + '-' + Math.random().toString(36).slice(2, 7), ts, card: b.card, amt: ui.amount, items: E.txItems(b, x) }, placeNow());
     LEDGER.push(tx);
     if (!saveLedger()) {
       LEDGER.pop();
@@ -1119,6 +1160,8 @@
     if (d.flag) { S.checks[d.flag] = true; saveS(); render(true); return; }
     if (d.soldier) { S.soldier = d.soldier === '1'; saveS(); render(true); return; }
     if (d.lm) { ui.month = E.addMonth(ui.month, Number(d.lm)); render(true); return; }
+    if (d.rm) { ui.rmonth = E.addMonth(ui.rmonth, Number(d.rm)); render(true); return; }
+    if (d.rmset) { ui.rmonth = d.rmset; render(true); return; }
     if (d.add !== undefined) {
       const n = Number(d.add);
       setAmount(n ? ui.amount + n : 0);

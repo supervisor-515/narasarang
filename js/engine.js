@@ -686,6 +686,59 @@
     };
   }
 
+  // ───── 월간 리포트: 실제 기록 vs 카드 한 장만 썼을 때 ─────
+  // 같은 곳(tx.place 검색어 / tx.sec 섹터 / 기록된 혜택의 섹터)·같은 금액·같은 시각에 그 카드로만 결제했다고
+  // 가정하고, 그 카드의 한도를 가상 기록으로 차감해가며 다시 계산. 전월 실적은 현재 설정값을 그 달에도 적용(추정)
+  function placeOf(DATA, tx) {
+    if (typeof tx.place === 'string' && tx.place.trim()) return { q: tx.place };
+    const BEN = (id) => DATA.BENEFITS.find((b) => b.id === id);
+    const first = (tx.items || []).map((i) => BEN(i.b)).find(Boolean);
+    const sec = tx.sec || (first && first.sector);
+    return sec === 'px' ? { q: 'PX' } : { sec };
+  }
+  function simulateCard(DATA, s, txs, cardId) {
+    const sim = [];
+    let t = 0;
+    const s2 = Object.assign({}, s, { cards: [cardId], spendAt: {}, adjust: [], showAll: false });
+    const rt = { px: null, channel: null, promo: null };
+    const E = create(DATA, { getS: () => s2, getLedger: () => sim, now: () => t, getInput: () => ({ tickets: 1 }), getRoute: () => rt });
+    let won = 0;
+    let point = 0;
+    txs.filter((tx) => tx.amt > 0 && (tx.items || []).some((i) => i.unit !== 'use')).sort((a, b) => a.ts - b.ts).forEach((tx) => {
+      t = tx.ts;
+      Object.assign(rt, { px: null, channel: null, promo: null }, tx.route || {});
+      const pl = placeOf(DATA, tx);
+      const pool = pl.q ? E.search(pl.q, [cardId]) : DATA.BENEFITS.filter((b) => b.card === cardId && b.sector === pl.sec);
+      let best = null;
+      pool.filter((b) => b.card === cardId && b.calc && !b.addon && !b.verify).forEach((b) => {
+        if (E.evaluate(b, tx.amt).status !== 'ok') return;
+        const x = E.estimate(b, tx.amt);
+        if (x && x.v > 0 && (!best || E.worth(x) > E.worth(best.x))) best = { b, x };
+      });
+      if (!best) return;
+      const items = E.txItems(best.b, best.x);
+      sim.push({ id: 'sim', ts: tx.ts, card: cardId, amt: tx.amt, items });
+      items.forEach((i) => { if (i.unit === 'point') point += i.v; else won += i.v; });
+    });
+    return { card: cardId, won, point };
+  }
+  // txs: 한 달 치 기록, cards: 비교할 카드 → { spent, count, won, point, worth, pct, single: [{ card, won, point, worth, diff }] }
+  function monthReport(DATA, s, txs, cards) {
+    const pv = s.pointValue == null ? 1 : s.pointValue;
+    const paid = txs.filter((tx) => tx.amt > 0 && (tx.items || []).some((i) => i.unit !== 'use'));
+    let won = 0;
+    let point = 0;
+    paid.forEach((tx) => tx.items.forEach((i) => { if (i.unit === 'point') point += i.v; else if (i.unit !== 'use') won += i.v; }));
+    const spent = paid.reduce((a, tx) => a + tx.amt, 0);
+    const worthAll = won + point * pv;
+    const single = cards.map((c) => {
+      const r = simulateCard(DATA, s, paid, c);
+      const w = r.won + r.point * pv;
+      return Object.assign(r, { worth: w, diff: worthAll - w });
+    }).sort((a, b) => b.worth - a.worth);
+    return { spent, count: paid.length, won, point, worth: worthAll, pct: spent ? (worthAll / spent) * 100 : 0, single };
+  }
+
   // ───── 저장 데이터 검증 (불러오기·백업 복원 공용) ─────
   const isObj = (v) => v && typeof v === 'object' && !Array.isArray(v);
   const MONTH = /^\d{4}-\d{2}$/;
@@ -749,10 +802,16 @@
         items: fixed.items.map((i) => ({ b: i.b, k: BEN[i.b].limKey || BEN[i.b].id, v: i.v, pooled: !!i.pooled, unit: i.unit || 'won' })) };
       if (fixed.edited === true) tx.edited = true;
       if (typeof fixed.plan === 'string') tx.plan = fixed.plan;
+      if (typeof fixed.place === 'string' && fixed.place.trim() && fixed.place.length <= 30) tx.place = fixed.place.trim();
+      if (typeof fixed.sec === 'string' && DATA.SECTORS.some((x) => x.id === fixed.sec)) tx.sec = fixed.sec;
+      if (isObj(fixed.route)) {
+        const r = Object.fromEntries(Object.entries(fixed.route).filter(([k, v]) => (ROUTE_VALS[k] || []).includes(v)));
+        if (Object.keys(r).length) tx.route = r;
+      }
       out.push(tx);
     });
     return { tx: out, dropped };
   }
 
-  return { create, NEEDS, sanitizeSettings, isTx, cleanImportTx, josa };
+  return { create, NEEDS, sanitizeSettings, isTx, cleanImportTx, josa, monthReport, simulateCard };
 }));

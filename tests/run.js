@@ -295,6 +295,47 @@ test('지난달 사용액은 입력한 달이 지나면 무효', () => {
   assert.strictEqual(E.evaluate(B('hana-starbucks'), 20000).status, 'check');
 });
 
+test('월간 리포트: 아낀 돈·평균 절약률·카드 한 장만 썼을 때 비교', () => {
+  const S = { cards: ['hana', 'shinhan'], spend: { hana: 100000, shinhan: 100000 }, spendAt: {}, firstUse: {}, since: {}, checks: {}, savings: [], pointValue: 1 };
+  const txs = [
+    tx('2026-10-15T09:00:00', 'hana', 25000, [{ b: 'hana-px', k: 'hana-px', v: 5000, unit: 'won' }]),
+    Object.assign(tx('2026-10-15T12:00:00', 'hana', 12000, [{ b: 'hana-starbucks', k: 'hana-starbucks', v: 2400, pooled: true, unit: 'won' }]), { place: '스타벅스' }),
+  ];
+  const r = Engine.monthReport(DATA, S, txs, ['hana', 'shinhan']);
+  assert.strictEqual(r.spent, 37000);
+  assert.strictEqual(r.worth, 7400);
+  assert.strictEqual(r.pct.toFixed(1), '20.0');
+  const sh = r.single.find((x) => x.card === 'shinhan');
+  assert.strictEqual(sh.won, 1600); // PX 3만원 미만 20% → 건당 1천원, 스타벅스 커피 5% 600원
+  assert.strictEqual(sh.diff, 5800);
+  assert.strictEqual(r.single.find((x) => x.card === 'hana').won, 7400);
+});
+
+test('월간 리포트: 한 장만 쓰면 한도가 차는 것까지 반영', () => {
+  const S = { cards: ['hana', 'ibk'], spend: {}, spendAt: {}, firstUse: {}, since: {}, checks: {}, savings: ['ibk'], pointValue: 1 };
+  // 하나 PX 3만원 미만은 일 5천원 한도 → 같은 날 두 번이면 두 번째는 0원
+  const txs = [
+    tx('2026-10-16T09:00:00', 'hana', 20000, [{ b: 'hana-px', k: 'hana-px', v: 5000, unit: 'won' }]),
+    tx('2026-10-16T10:00:00', 'ibk', 20000, [{ b: 'ibk-px-basic', k: 'ibk-px-basic', v: 3000, unit: 'won' }]),
+  ];
+  const r = Engine.monthReport(DATA, S, txs, ['hana', 'ibk']);
+  assert.strictEqual(r.single.find((x) => x.card === 'hana').won, 5000);
+  assert.strictEqual(r.single.find((x) => x.card === 'ibk').won, 6000);
+  assert.strictEqual(r.worth, 8000);
+});
+
+test('백업 가져오기: 결제한 곳·섹터·경로를 유지하고 잘못된 값은 버림', () => {
+  const t = { id: 'p1', ts: new Date('2026-10-01T10:00:00').getTime(), card: 'hana', amt: 25000, place: 'PX', sec: 'px', route: { px: 'navy', bad: 'x' }, items: [{ b: 'hana-px', k: 'hana-px', v: 5000, unit: 'won' }] };
+  const bad = Object.assign({}, t, { id: 'p2', place: 'x'.repeat(40), sec: 'nope', route: { px: 'zzz' } });
+  const r = Engine.cleanImportTx(DATA, [t, bad], (x) => x);
+  assert.strictEqual(r.tx[0].place, 'PX');
+  assert.strictEqual(r.tx[0].sec, 'px');
+  assert.strictEqual(JSON.stringify(r.tx[0].route), '{"px":"navy"}');
+  assert.strictEqual(r.tx[1].place, undefined);
+  assert.strictEqual(r.tx[1].sec, undefined);
+  assert.strictEqual(r.tx[1].route, undefined);
+});
+
 console.log('데이터 검증');
 
 test('혜택 id가 고유하고 필수 필드가 있다', () => {
